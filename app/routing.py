@@ -1,0 +1,74 @@
+"""Distribuicao de leads entre consultores.
+
+Round-robin POR CARGA, nao por ponteiro: entre os que estao livres naquele
+horario, ganha quem tem menos agendamentos futuros; empate desempata por quem
+esta ha mais tempo sem receber.
+
+A diferenca importa quando alguem sai de ferias. Um ponteiro circular continua
+entregando a vez do ausente e a fila trava; a carga se reequilibra sozinha.
+
+(O sistema juridico usa a estrategia oposta, por ponteiro. Quando as duas bases
+forem integradas, uma das duas tera de ceder — anotado no README.)
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Sequence
+from datetime import datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.enums import StatusAgendamento
+from app.models import Agendamento
+
+
+async def carga_futura(
+    sessao: AsyncSession, agora: datetime
+) -> dict[uuid.UUID, tuple[int, datetime | None]]:
+    """Por consultor: quantos agendamentos futuros e qual o mais distante."""
+    linhas = await sessao.execute(
+        select(
+            Agendamento.consultor_id,
+            func.count(Agendamento.id),
+            func.max(Agendamento.inicio_utc),
+        )
+        .where(
+            Agendamento.status == StatusAgendamento.AGENDADO.value,
+            Agendamento.inicio_utc >= agora,
+        )
+        .group_by(Agendamento.consultor_id)
+    )
+    return {
+        consultor_id: (quantidade, ultimo)
+        for consultor_id, quantidade, ultimo in linhas.all()
+    }
+
+
+def escolher_consultor(
+    candidatos: Sequence,
+    cargas: dict[uuid.UUID, tuple[int, datetime | None]],
+):
+    """Entre os livres naquele horario, o de menor carga.
+
+    `candidatos` sao objetos com `consultor_id` e `consultor_nome`, todos para o
+    MESMO horario. O nome entra na chave de ordenacao so para o desempate ser
+    estavel — sem isso, dois consultores empatados alternariam a cada execucao e
+    os testes ficariam intermitentes.
+    """
+    if not candidatos:
+        return None
+
+    def chave(candidato):
+        quantidade, ultimo = cargas.get(candidato.consultor_id, (0, None))
+        # `ultimo is not None` ordena o consultor sem nenhum agendamento futuro
+        # na frente: quem esta parado ha mais tempo recebe primeiro.
+        return (
+            quantidade,
+            ultimo is not None,
+            ultimo or datetime.min.replace(tzinfo=candidato.inicio_utc.tzinfo),
+            candidato.consultor_nome,
+        )
+
+    return min(candidatos, key=chave)
