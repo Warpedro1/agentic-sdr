@@ -5,11 +5,11 @@ Idempotente: rodar duas vezes nao duplica nada.
     python scripts/seed.py
 """
 
-import asyncio
 from datetime import time
 
 from sqlalchemy import select
 
+from app.aio import executar
 from app.db import encerrar, sessao
 from app.logging import configurar_logging, obter_logger
 from app.models import Consultor, RegraDisponibilidade
@@ -85,4 +85,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    executar(main())

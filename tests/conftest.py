@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.sql import text
 
+from app.aio import loop_factory
 from app.config import obter_configuracao
 from app.models import Base
 
@@ -29,6 +30,16 @@ def _url_teste() -> str:
 def _url_admin() -> str:
     base = obter_configuracao().database_url
     return base.rsplit("/", 1)[0] + "/postgres"
+
+
+def pytest_asyncio_loop_factories():
+    """No Windows o psycopg async nao roda no loop padrao (Proactor).
+
+    Mesma correcao de app/aio.py, aplicada ao loop que o pytest-asyncio cria.
+    Usa o hook novo: sobrescrever a fixture `event_loop_policy` funciona hoje mas
+    esta descontinuado, e `WindowsSelectorEventLoopPolicy` sai no Python 3.16.
+    """
+    return {"psycopg": loop_factory}
 
 
 @pytest_asyncio.fixture(scope="session")

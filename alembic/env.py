@@ -4,7 +4,6 @@ A URL do banco vem de `app.config` (ou seja, do .env), nunca do alembic.ini —
 assim nao ha duas fontes de verdade para a mesma credencial.
 """
 
-import asyncio
 from logging.config import fileConfig
 
 from alembic import context
@@ -12,6 +11,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app.aio import executar
 from app.config import obter_configuracao
 from app.models import Base
 
@@ -56,7 +56,7 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    executar(run_async_migrations())
 
 
 if context.is_offline_mode():
