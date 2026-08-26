@@ -20,8 +20,10 @@ class Estado(StrEnum):
     AGUARDANDO_TIPO_CONTRATO = "AGUARDANDO_TIPO_CONTRATO"
     AGUARDANDO_TEM_CONTRATO = "AGUARDANDO_TEM_CONTRATO"
     AGUARDANDO_ENVIO_CONTRATO = "AGUARDANDO_ENVIO_CONTRATO"
+    CARREGANDO_HORARIOS = "CARREGANDO_HORARIOS"
     AGUARDANDO_ESCOLHA_HORARIO = "AGUARDANDO_ESCOLHA_HORARIO"
     AGUARDANDO_CONFIRMACAO = "AGUARDANDO_CONFIRMACAO"
+    RESERVANDO = "RESERVANDO"
     AGENDADO = "AGENDADO"
     OPT_OUT = "OPT_OUT"
     ESCALADO_HUMANO = "ESCALADO_HUMANO"
@@ -32,8 +34,17 @@ ESTADOS_TERMINAIS: frozenset[Estado] = frozenset(
     {Estado.AGENDADO, Estado.OPT_OUT, Estado.ESCALADO_HUMANO}
 )
 
-#: Estado interno: atravessado pelo engine, nunca aguarda digitacao do lead.
-ESTADOS_INTERNOS: frozenset[Estado] = frozenset({Estado.RESOLVENDO_IDENTIDADE})
+#: Estados internos: a maquina nao espera digitacao neles. Cada um marca uma
+#: fronteira de I/O — a maquina emite o efeito, o engine executa e preenche o
+#: ctx, e entao reinvoca handle() com entrada vazia. E assim que a funcao
+#: continua pura mesmo precisando de banco no meio do fluxo.
+ESTADOS_INTERNOS: frozenset[Estado] = frozenset(
+    {
+        Estado.RESOLVENDO_IDENTIDADE,
+        Estado.CARREGANDO_HORARIOS,
+        Estado.RESERVANDO,
+    }
+)
 
 
 class Direcao(StrEnum):

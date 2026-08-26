@@ -39,6 +39,8 @@ def test_pessoal_nao_dispara_escalonamento():
     "entrada",
     [
         "quanto custa?",
+        "quanto vocês cobram?",
+        "qual o preço?",
         "quanto vocês cobram de honorários?",
         "meu contrato é abusivo?",
         "quanto vou receber de volta?",

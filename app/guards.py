@@ -57,6 +57,11 @@ TRECHOS_FORA_DE_ESCOPO: tuple[str, ...] = (
     "taxa",
     "juros",
     "valor",
+    # "cobra" e "preco" nao estavam na lista original, mas "quanto voces cobram?"
+    # e um dos casos de aceitacao do projeto e nao casava com nenhum dos outros
+    # trechos. Cobrem cobram/cobrar/cobranca e preco/precos.
+    "cobra",
+    "preco",
 )
 
 
