@@ -1,0 +1,91 @@
+# Catalogo de respostas da Marina.
+#
+# Nenhuma resposta e gerada — todas sao escolhidas daqui. E isso que garante que
+# a Marina nunca opine sobre juros, valores ou honorarios.
+#
+# Este arquivo e feito para ser revisado pelo pessoal da Leve sem tocar em codigo.
+# Editar a copy nao exige deploy de logica; so o snapshot do teste e2e precisa ser
+# atualizado junto (pytest tests/test_e2e_transcricao.py).
+
+boas_vindas: |
+  Olá! Eu sou a Marina, assistente virtual da Leve Soluções Financeiras e Empresariais.
+  Vou te fazer algumas perguntas rápidas para entender seu caso e já deixar uma conversa
+  agendada com um dos nossos consultores. Leva menos de 2 minutos.
+  Seus dados são usados apenas para este atendimento. A qualquer momento, digite SAIR
+  para encerrar.
+
+pergunta_nome:      "Para começar, como posso te chamar?"
+pergunta_telefone:  "Prazer, {nome}! Qual o seu telefone com DDD? (ex.: 11 98765-4321)"
+erro_telefone:      "Não consegui entender esse número. Pode mandar com DDD, assim: 11 98765-4321"
+pergunta_email:     "Perfeito. E qual o seu e-mail? É por ele que envio o convite da reunião."
+
+pergunta_fonte: |
+  Como você chegou até a Leve? Responda com o número:
+  1 - Anúncio      2 - WhatsApp     3 - E-mail
+  4 - LinkedIn     5 - Indicação    6 - Google      7 - Outro
+
+pergunta_contrato: |
+  Obrigada! Agora uma pergunta importante: você tem em mãos o contrato do empréstimo
+  que o banco te forneceu?
+  1 - Sim, tenho     2 - Não tenho
+
+pedido_contrato: |
+  Ótimo! Se puder me enviar o contrato agora, nosso time faz uma análise preliminar
+  antes da sua reunião — assim a conversa rende muito mais.
+  (digite o caminho do arquivo, ou PULAR para enviar depois)
+
+contrato_recebido: |
+  Recebido, {nome}! Encaminhei para o time fazer a análise preliminar.
+  A análise é feita por um consultor, nunca automaticamente.
+
+contrato_pulado:  "Sem problema. Você pode enviar depois ou levar na reunião."
+sem_contrato:     "Tudo bem. O consultor te orienta sobre como pedir a segunda via ao banco."
+
+oferta_horarios: |
+  Vamos agendar sua conversa? Estes são os horários disponíveis:
+  {lista_slots}
+  Responda com o número.
+
+sem_horarios: |
+  No momento não tenho horários nos próximos {dias} dias. Vou pedir para um consultor
+  entrar em contato no {telefone}.
+
+confirmacao:  "Confirmando: {data_extenso}, às {hora}, com {consultor}. Está certo?\n1 - Sim  2 - Escolher outro"
+agendado: |
+  Prontinho, {nome}! Sua conversa está agendada para {data_extenso} às {hora} com {consultor}.
+  Enviei a confirmação para {email}. Se precisar remarcar, é só me chamar.
+
+slot_perdido:     "Ih, esse horário acabou de ser preenchido. Escolhe outro?"
+nao_entendi:      "Desculpa, não entendi. {repeticao}"
+fora_de_escopo: |
+  Essa é uma ótima pergunta para o consultor — ele analisa seu contrato e te explica
+  direitinho. Prefiro não dar um número sem olhar o seu caso. Vamos agendar?
+
+escalonamento:    "Acho melhor te passar para um consultor. Já avisei o time — em breve alguém te chama no {telefone}."
+opt_out:          "Tudo bem, encerrei nosso atendimento. Se mudar de ideia, é só chamar."
+
+# --- Acrescimos ---
+# A pergunta de tipo de contrato e o fluxo de retorno (reconhecimento de quem ja
+# falou com a Marina antes) exigem as chaves abaixo.
+
+pergunta_tipo_contrato: |
+  E qual tipo de contrato você quer revisar?
+  1 - Empréstimo consignado (desconto em folha ou INSS)
+  2 - Empréstimo pessoal
+  3 - Cartão de crédito
+
+erro_tipo_contrato: "Responda com 1 para consignado, 2 para empréstimo pessoal ou 3 para cartão de crédito."
+
+retomada_opt_out: |
+  Oi de novo! Você tinha pedido para encerrar nosso atendimento, então não continuo
+  sem sua confirmação. Quer retomar de onde paramos?
+  1 - Sim, pode continuar     2 - Não, obrigado
+
+retomada_conversa: |
+  Que bom te ver de novo, {nome}! Nossa conversa ficou pela metade.
+  1 - Continuar de onde paramos     2 - Começar do zero
+
+retorno_reconhecido: |
+  Bem-vindo de volta, {nome}! Já tenho seus dados aqui, então vamos direto ao ponto.
+
+opt_out_mantido:  "Sem problema, mantive seu atendimento encerrado. Se mudar de ideia, é só chamar."
