@@ -120,10 +120,9 @@ suprimir. Quem desiste antes de informar o telefone simplesmente encerra a
 conversa — não faz sentido bloquear um contato desconhecido, e isso encheria a
 lista de linhas vazias.
 
-**[DECIDIDO]** O opt-out vale **apenas para a empresa** onde a pessoa pediu para
-sair. Se ela desistiu da empresa A, a empresa B continua podendo abordá-la — a
-empresa B nunca falou com ela e tem base própria para isso. Cada empresa é dona
-da relação dela.
+**[DECIDIDO]** O opt-out vale para a empresa inteira, **todas as filiais**. Quem
+pediu para sair pediu para sair da empresa, não de uma unidade — ser abordado de
+novo por outra filial da mesma empresa seria exatamente o que a pessoa recusou.
 
 ### Quando a pessoa volta
 
@@ -188,55 +187,113 @@ Quando a segunda defesa dispara, **isso não é erro** — é o caminho normal d
 segundo lead, que recebe *"Ih, esse horário acabou de ser preenchido. Escolhe
 outro?"* e a lista recalculada.
 
-**[DECIDIDO]** Se o mesmo consultor atender duas empresas, a trava vale por
-**pessoa**, não por vínculo — ele nunca é marcado em duas reuniões no mesmo
-horário, mesmo que sejam de empresas diferentes.
+**[DECIDIDO]** A trava vale por **pessoa**. Se o mesmo consultor atender mais de
+uma filial, ele nunca é marcado em duas reuniões no mesmo horário — a agenda dele
+é uma só, independente de por qual unidade a reunião entrou.
 
 ---
 
-## 6. Várias empresas
+## 6. Uma empresa, e a filial escondida do lead
 
-**[DECIDIDO]** A Marina atende **várias empresas**, e todas elas são empresas
-cadastradas dentro do juridico. Um CRM por empresa, mesmo sistema.
+> **Correção registrada em 27/08/2026.** Esta seção dizia antes que a Marina
+> atenderia várias empresas. Era leitura errada do juridico, e está desfeita.
+> O texto anterior está descrito abaixo só para quem encontrar referências a ele.
 
-### Regras
+**[DECIDIDO]** Esta instalação do juridico atende **uma empresa**. No vocabulário
+das telas dele:
 
-- **Cada empresa é um mundo separado.** Leads, conversas, consultores, horários,
-  agendamentos e listas de supressão pertencem a uma empresa.
-- **A mesma pessoa pode ser lead de duas empresas** e são dois cadastros
-  distintos. A identificação é por *(empresa + telefone)*, nunca por telefone
-  sozinho.
+- **"Empresa"** identifica as **filiais de uma mesma empresa** — não clientes
+  diferentes.
+- **"Funcionário"** representa o **papel** daquela pessoa dentro da empresa.
 
-  > Esta é a regra mais importante desta seção. Se a identificação fosse só pelo
-  > telefone, a mesma pessoa viraria **um cadastro compartilhado** entre dois
-  > clientes — e a empresa B enxergaria o que a empresa A apurou. Não é bug de
-  > funcionamento, é vazamento entre clientes.
+### A regra de produto
 
-- **Quem decide de qual empresa é a conversa é o canal.** No WhatsApp, o número
-  que recebeu a mensagem. O juridico já sabe resolver empresa a partir do número.
-- **A Marina se apresenta com o nome da empresa certa.** O nome não pode ser
-  texto fixo na saudação.
+**A Marina esconde a filial de quem está do outro lado.** Ela organiza a conversa
+**só por horário e agendamento** — nunca pergunta, nunca menciona unidade, filial
+ou regional.
+
+> Para quem está procurando ajuda, "qual unidade me atende" é assunto interno da
+> empresa. Perguntar acrescentaria uma pergunta que não qualifica ninguém, e
+> ainda por cima é uma pergunta que a pessoa pode responder errado. Quem sabe
+> qual consultor atende é a empresa; o lead só precisa de um horário.
+
+### O que isso cancela
+
+A reforma multi-empresa que estava planejada **não vai acontecer**: nada de
+`empresa_id` nas tabelas, nada de identificação por *(empresa + telefone)*, nada
+de uma sessão do juridico por empresa, nada de nome de empresa variável na
+saudação. O modelo de uma empresa só, como está hoje, continua valendo.
 
 ### Como a Marina se identifica no juridico
 
-**[DECIDIDO]** Um único usuário "Marina" no juridico, vinculado a várias
-empresas — o mesmo mecanismo que o juridico usa para funcionários que atendem
-mais de uma empresa.
+**[FEITO]** Um usuário de serviço, criado em 27/08/2026:
 
-- Papel **SUPERVISOR** em cada empresa.
+| | |
+|---|---|
+| Login | `marina` |
+| Papel | **DIRETOR** |
+| Filial | nenhuma (acesso a todas) |
+| Módulos | CRM entre eles |
 
-  > Não pode ser COMERCIAL: verificado no código do juridico, quando quem cria o
-  > lead é COMERCIAL, o lead é atribuído a essa pessoa em vez de ir para o
-  > rodízio. A Marina ficaria com todos os leads e nenhum consultor receberia
-  > nada.
+**Sobre o papel — corrige o que estava escrito aqui antes.** Este documento dizia
+que a Marina precisava ser SUPERVISOR. Não precisa, e não dá: a tela de
+funcionários do juridico **cria sempre como DIRETOR**, qualquer que seja o
+"cargo" digitado — o cargo é só um rótulo.
 
-- O usuário precisa ter **matriz e filial coerentes** em cada empresa. Sem isso os
-  leads nascem fora de escopo e as listagens do juridico voltam **vazias, sem dar
-  erro** — falha silenciosa, difícil de perceber.
-- **Uma sessão por empresa.** O juridico verifica se a sessão está no contexto da
-  empresa que o acesso diz, então um acesso da empresa A **para de funcionar** se
-  aquela sessão trocar para a empresa B. O isolamento é garantido pelo próprio
-  juridico, não pela nossa disciplina.
+E DIRETOR serve melhor do que SUPERVISOR:
+
+- pode criar lead e agendamento;
+- **não entra no rodízio** de distribuição, que só sorteia COMERCIAL, GERENTE e
+  SUPERVISOR. Ou seja, a Marina cadastra os leads sem ficar com nenhum deles.
+
+O papel a evitar continua sendo **COMERCIAL**: quando quem cria o lead é
+COMERCIAL, o juridico atribui o lead a essa pessoa em vez de distribuir, e a
+Marina ficaria com todos.
+
+**Sem filial fixa, com acesso a todas.** É isso que põe a matriz inteira no
+escopo dela e permite ignorar filial ao escolher consultor e horário.
+
+**[EM ABERTO]** Risco a vigiar se filiais de verdade passarem a existir: um
+agendamento gravado sem filial pode **não aparecer** no calendário de um
+consultor que só enxerga a própria unidade. Hoje não há filial cadastrada, então
+o risco é teórico.
+
+### Papel próprio para a Marina — implementação futura
+
+**[EM ABERTO]** A Marina deve deixar de usar um papel de pessoa e passar a ter um
+**papel próprio, com permissões próprias**, desenhado para um robô.
+
+**Por que isso importa.** DIRETOR é o papel de um diretor de verdade: ele abre
+**todos** os módulos — financeiro, jurídico, relacionamento, operacional. A Marina
+usa **um só**: o comercial, para cadastrar o lead e marcar a reunião. Hoje ela
+carrega uma chave que abre a empresa inteira para fazer um trabalho que precisa
+de uma chave só.
+
+Isso é aceitável enquanto é teste, e deixa de ser no dia em que a Marina falar com
+gente de verdade: a credencial dela vai morar num arquivo de configuração, e o
+estrago possível se ela vazar deve ser do tamanho do trabalho dela, não do cargo
+que ela pegou emprestado.
+
+**O que esse papel precisaria poder fazer, e só isso:**
+
+- cadastrar lead e registrar o primeiro contato;
+- criar agendamento e consultar os horários já ocupados dos consultores;
+- listar quem pode atender.
+
+**O que ele não deve poder fazer:** ver financeiro, jurídico ou documentos de
+cliente; criar ou alterar usuários; mexer em configuração da empresa.
+
+**Duas condições que o papel novo tem que preservar** — as duas já valem hoje por
+acidente, e quebrá-las quebra a Marina:
+
+1. **Não entrar no rodízio de distribuição.** Se o papel do robô virar um papel
+   "comercial", o juridico passa a atribuir os leads a ele — e nenhum consultor
+   recebe nada.
+2. **Enxergar a matriz inteira, sem filial fixa.** É o que permite ignorar filial
+   ao escolher consultor e horário.
+
+**Onde isso mexe:** é mudança no juridico (a lista de papéis e o mapa de papel →
+módulos), não na Marina. Do lado dela, muda só o usuário configurado.
 
 ---
 
@@ -299,10 +356,10 @@ uma lista de pendências para alguém resolver.
 
 ---
 
-## 9. Painel de configuração por empresa
+## 9. Painel de configuração dentro do juridico
 
-**[EM ABERTO]** Ideia registrada em 27/08/2026: dentro do juridico, abrir uma
-empresa e configurar a Marina ali, sem intervenção técnica.
+**[EM ABERTO]** Ideia registrada em 27/08/2026: configurar a Marina por um botão
+dentro do juridico, sem intervenção técnica.
 
 **O que já existe e pode ser aproveitado:** o juridico já tem, por empresa, uma
 tela de configuração de WhatsApp que guarda o identificador do número, o número,
@@ -313,14 +370,13 @@ webhook pronta para colar no painel da Meta.
 **O que faltaria acrescentar:**
 
 - uma chave "atender com a Marina" (em vez do bot de FAQ atual);
-- nome de exibição da empresa, usado na saudação;
-- quais consultores atendem e em quais horários;
+- quais consultores atendem e em quais horários — hoje o passo mais manual;
 - antecedência mínima e quantos horários oferecer;
 - e-mail para onde vão as pendências que precisam de gente.
 
 **Ponto que precisa ser decidido antes:** um número de WhatsApp só pode estar
-ligado a um aplicativo por vez. Cada empresa precisa do próprio número, ou o
-número atual precisa migrar. Isso é decisão de negócio, não técnica.
+ligado a um aplicativo por vez. Se o número que a empresa já usa for o mesmo, ele
+precisa migrar. Isso é decisão de negócio, não técnica.
 
 ---
 
@@ -329,7 +385,8 @@ número atual precisa migrar. Isso é decisão de negócio, não técnica.
 | Assunto | Situação |
 |---|---|
 | Quem recebe as mensagens do WhatsApp — o juridico repassa ou a Marina recebe direto | **[EM ABERTO]** |
-| Número de WhatsApp por empresa | **[EM ABERTO]** — depende de conta Meta |
+| Número de WhatsApp da Marina — novo ou migrar o atual | **[EM ABERTO]** — depende de conta Meta |
+| Agendamento marcado à mão no juridico bloquear horário na Marina | **[EM ABERTO]** — hoje ela não lê a agenda de lá e pode marcar em cima |
 | Unificar os dois rodízios (juridico por ponteiro, Marina por carga) | **[EM ABERTO]** — convivem hoje |
 | Coletar CPF para casar com cadastros antigos do juridico | **[EM ABERTO]** |
 | Follow-up de quem abandonou a conversa no meio | **[EM ABERTO]** — hoje não existe |
