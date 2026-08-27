@@ -239,3 +239,64 @@ async def test_qualificacao_leva_o_que_nao_tem_campo_no_juridico(
     texto = observacoes[0]
     assert "consignado" in texto
     assert "contrato em mãos" in texto
+
+
+# --- fiacao do CLI ----------------------------------------------------------
+#
+# Nao precisam de banco: so verificam quais pecas o CLI monta para cada
+# configuracao. Sem isso a fiacao nao e exercitada por teste nenhum — e ela ja
+# quebrou uma vez em silencio.
+
+
+def _sessionmaker_de_mentira():
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    return async_sessionmaker(
+        create_async_engine("postgresql+psycopg://x:x@localhost:1/x")
+    )
+
+
+def test_cli_desligado_usa_o_noop():
+    from app.cli import montar_motor
+    from app.config import Configuracao
+    from app.crm import CrmSinkNoop
+
+    motor, cliente = montar_motor(
+        _sessionmaker_de_mentira(), ScriptedAdapter([]), Configuracao(juridico_ativo=False)
+    )
+    assert cliente is None
+    assert isinstance(motor._crm, CrmSinkNoop)
+    assert motor._entregador is None
+
+
+def test_cli_ligado_usa_a_fila():
+    from app.cli import montar_motor
+    from app.config import Configuracao
+
+    motor, cliente = montar_motor(
+        _sessionmaker_de_mentira(),
+        ScriptedAdapter([]),
+        Configuracao(
+            juridico_ativo=True,
+            juridico_login="marina",
+            juridico_senha="x",
+            juridico_base_url="https://juridico.exemplo",
+        ),
+    )
+    assert cliente is not None
+    assert isinstance(motor._crm, CrmSinkOutbox)
+    assert motor._entregador is not None
+
+
+def test_cli_ligado_sem_credencial_cai_no_noop():
+    # Marcar ativo=true e esquecer login/senha nao pode virar erro no meio de um
+    # atendimento: vira integracao desligada, e a Marina segue funcionando.
+    from app.cli import montar_motor
+    from app.config import Configuracao
+    from app.crm import CrmSinkNoop
+
+    motor, cliente = montar_motor(
+        _sessionmaker_de_mentira(), ScriptedAdapter([]), Configuracao(juridico_ativo=True)
+    )
+    assert cliente is None
+    assert isinstance(motor._crm, CrmSinkNoop)

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.aio import executar
 from app.channels.terminal import TerminalAdapter
-from app.config import obter_configuracao
+from app.config import Configuracao, obter_configuracao
 from app.db import encerrar, obter_engine
 from app.engine import Engine
 from app.integrations.juridico.fabrica import (
@@ -47,19 +47,37 @@ async def main() -> None:
     config = obter_configuracao()
 
     criar_sessao = async_sessionmaker(obter_engine(), expire_on_commit=False)
-    motor = Engine(
-        criar_sessao=criar_sessao,
-        adaptador=TerminalAdapter(),
-        config=config,
-        armazenamento=LocalDocumentStorage(config),
-        crm=CrmSinkNoop(),
-    )
+    motor, cliente = montar_motor(criar_sessao, TerminalAdapter(), config)
 
     try:
         conversa_id = await motor.rodar()
         print(f"\n[conversa {conversa_id}]")
     finally:
+        if cliente is not None:
+            await cliente.fechar()
         await encerrar()
+
+
+def montar_motor(criar_sessao, adaptador, config: Configuracao):
+    """Monta o engine com as dependências que a configuração pedir.
+
+    Separado de `main` para poder ser testado: a fiação do CLI já quebrou uma vez
+    sem nenhum teste perceber, porque nada aqui era exercitado.
+
+    Com a integração desligada, `cliente` é None e o sink vira o no-op — a Marina
+    roda sozinha, exatamente como antes de existir CRM externo.
+    """
+    cliente = montar_cliente(config) if integracao_ativa(config) else None
+    entregador = montar_entregador(criar_sessao, cliente, config) if cliente else None
+    motor = Engine(
+        criar_sessao=criar_sessao,
+        adaptador=adaptador,
+        config=config,
+        armazenamento=LocalDocumentStorage(config),
+        crm=montar_sink(criar_sessao, config),
+        entregador=entregador,
+    )
+    return motor, cliente
 
 
 if __name__ == "__main__":
