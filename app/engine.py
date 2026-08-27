@@ -20,6 +20,7 @@ Duas responsabilidades do engine que sustentam o desenho:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -51,7 +52,7 @@ from app.machine import (
     Transicao,
     handle,
 )
-from app.models import Conversa, Documento, Lead, Mensagem, OptOut
+from app.models import Consultor, Conversa, Documento, Lead, Mensagem, OptOut
 from app.routing import carga_futura
 from app.storage.local import ArmazenamentoDocumento
 from app.templates import CatalogoMensagens, obter_catalogo
@@ -95,6 +96,7 @@ class Engine:
         armazenamento: ArmazenamentoDocumento | None = None,
         crm: CrmSink | None = None,
         relogio: Callable[[], datetime] | None = None,
+        entregador: Any | None = None,
     ) -> None:
         self._criar_sessao = criar_sessao
         self._adaptador = adaptador
@@ -105,6 +107,35 @@ class Engine:
         # Injetavel para o teste e2e poder congelar o tempo: a transcricao cita
         # datas de reuniao, e sem relogio fixo o snapshot mudaria todo dia.
         self._relogio = relogio or (lambda: datetime.now(UTC))
+        # Opcional. Quando existe, a fila do CRM e drenada em segundo plano
+        # durante a conversa, para o lead aparecer no outro sistema logo — sem
+        # que ninguem no atendimento espere por isso.
+        self._entregador = entregador
+        self._entregas: set[asyncio.Task] = set()
+
+    def _agendar_entrega(self) -> None:
+        """Dispara a drenagem sem bloquear a conversa.
+
+        Falha aqui nunca sobe: se o CRM estiver fora do ar, os itens ficam na
+        fila e a proxima tentativa resolve. O atendimento nao pode parar por
+        causa de outro sistema.
+        """
+        if self._entregador is None:
+            return
+
+        async def tentar() -> None:
+            try:
+                await self._entregador.drenar()
+            except Exception as erro:  # noqa: BLE001
+                logger.warning("crm_drenagem_falhou", erro=str(erro))
+
+        tarefa = asyncio.create_task(tentar())
+        self._entregas.add(tarefa)
+        tarefa.add_done_callback(self._entregas.discard)
+
+    async def _aguardar_entregas(self) -> None:
+        if self._entregas:
+            await asyncio.gather(*list(self._entregas), return_exceptions=True)
 
     # --- ciclo de vida ------------------------------------------------------
 
@@ -133,6 +164,9 @@ class Engine:
             await self._registrar_entrada(execucao, entrada)
             await self._processar(execucao, entrada)
 
+        # Mesmo numa conversa abandonada no meio, o que ja foi enfileirado
+        # precisa ter a chance de chegar ao CRM antes do processo terminar.
+        await self._aguardar_entregas()
         return execucao.conversa_id
 
     async def _abrir(self) -> Execucao:
@@ -214,6 +248,15 @@ class Engine:
                     )
                 )
             await sessao.commit()
+
+        # `possui_contrato` e o ultimo campo da sequencia de coleta: quando ele
+        # e preenchido, a qualificacao esta completa. E o marco certo para
+        # mandar ao CRM o que a conversa apurou.
+        if "possui_contrato" in transicao.lead_updates and execucao.lead_id:
+            await self._crm.registrar_qualificacao(
+                {**execucao.lead, "lead_id": str(execucao.lead_id)}
+            )
+            self._agendar_entrega()
 
         for mensagem in transicao.mensagens:
             await self._adaptador.enviar(mensagem)
@@ -349,7 +392,10 @@ class Engine:
             "ultima_conversa_em": ultima_em,
             "ultimo_estado": ultimo_estado,
         }
-        await self._crm.registrar_lead(execucao.lead)
+        await self._crm.registrar_lead(
+            {**execucao.lead, "lead_id": str(execucao.lead_id)}
+        )
+        self._agendar_entrega()
         logger.info(
             "identidade_resolvida",
             conversa_id=str(execucao.conversa_id),
@@ -411,19 +457,29 @@ class Engine:
             )
         execucao.ctx["reserva"] = {"ok": resultado.ok, "motivo": resultado.motivo}
         if resultado.ok:
+            crm_consultor = await self._crm_usuario_do_consultor(slot.get("consultor_id"))
             await self._crm.registrar_agendamento(
                 {
+                    **slot,
                     "agendamento_id": str(resultado.agendamento_id),
                     "lead_id": str(execucao.lead_id),
-                    **slot,
+                    "juridico_consultor_id": crm_consultor,
                 }
             )
+            self._agendar_entrega()
         logger.info(
             "reserva_tentada",
             conversa_id=str(execucao.conversa_id),
             ok=resultado.ok,
             motivo=resultado.motivo,
         )
+
+    async def _crm_usuario_do_consultor(self, consultor_id: str | None) -> str | None:
+        if not consultor_id:
+            return None
+        async with self._criar_sessao() as sessao:
+            consultor = await sessao.get(Consultor, uuid.UUID(str(consultor_id)))
+            return consultor.crm_usuario_id if consultor else None
 
     async def _salvar_documento(
         self, execucao: Execucao, efeito: SalvarDocumento

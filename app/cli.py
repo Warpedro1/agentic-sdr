@@ -15,9 +15,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.aio import executar
 from app.channels.terminal import TerminalAdapter
 from app.config import obter_configuracao
-from app.crm import CrmSinkNoop
 from app.db import encerrar, obter_engine
 from app.engine import Engine
+from app.integrations.juridico.fabrica import (
+    integracao_ativa,
+    montar_cliente,
+    montar_entregador,
+    montar_sink,
+)
 from app.logging import configurar_logging
 from app.storage.local import LocalDocumentStorage
 

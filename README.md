@@ -43,7 +43,7 @@ inteira da conversa.
 pytest
 ```
 
-242 testes. Os de parser, guardrail e máquina de estados **não precisam de banco** e
+301 testes. Os de parser, guardrail e máquina de estados **não precisam de banco** e
 rodam em menos de um segundo; os demais pulam com mensagem clara se o Postgres não
 estiver no ar.
 
@@ -244,6 +244,94 @@ Só quando a API existir isso vira decisão de implementação; até lá, é ris
 
 ---
 
+## Integração com o `juridico`
+
+Desligada por padrão. Com `JURIDICO_ATIVO=false` a Marina funciona sozinha,
+exatamente como sem integração nenhuma.
+
+### Ligar
+
+No `juridico`, alguém precisa criar **um usuário para a Marina**:
+
+- papel **SUPERVISOR** — importante: se fosse `COMERCIAL`, o juridico atribuiria
+  **todos** os leads à própria Marina em vez de distribuir entre os consultores;
+- ativo, com **matriz e filial coerentes**. Sem isso os leads nascem fora de
+  escopo e as listagens do juridico voltam **vazias, sem dar erro** — o modo de
+  falha mais traiçoeiro daquele sistema.
+
+Depois, no `.env` da Marina:
+
+```
+JURIDICO_ATIVO=true
+JURIDICO_BASE_URL=https://o-endereco-do-juridico
+JURIDICO_LOGIN=...
+JURIDICO_SENHA=...
+```
+
+E então:
+
+```bash
+python scripts/sync_consultores.py     # importa os consultores reais
+python scripts/configurar_agenda.py    # define quem atende quando
+```
+
+O segundo passo é humano e não tem como ser adivinhado: **o juridico não tem
+noção nenhuma de agenda** — lá um agendamento é uma data que uma pessoa digitou.
+Consultor sem horário definido nunca aparece na lista oferecida ao lead.
+
+### Nenhuma alteração é necessária no `juridico`
+
+Todos os endpoints usados já existem: `POST /api/auth/login`,
+`POST /api/auth/refresh`, `GET /api/admin/leads/responsaveis`,
+`POST /api/admin/leads`, `GET /api/admin/leads?q=`,
+`POST /api/admin/leads/:id/primeiro-contato` e
+`POST /api/admin/leads/:id/agendamentos`.
+
+### A conversa nunca espera pelo juridico
+
+O envio acontece durante o atendimento. Se o outro sistema estiver lento ou fora
+do ar, o lead não pode ficar travado no meio da conversa.
+
+Por isso a Marina grava a intenção em `crm_outbox` — escrita local e rápida — e
+entrega em segundo plano, com nova tentativa e espera crescente. A conversa
+termina sempre. Quando o juridico volta, tudo é entregue.
+
+```bash
+python scripts/flush_outbox.py              # força a entrega agora
+python scripts/flush_outbox.py --falhados   # o que desistiu e precisa de gente
+```
+
+A ordem por lead é respeitada: não adianta mandar o agendamento antes de o lead
+existir do outro lado. Se o envio de um lead falha, os itens seguintes **dele**
+esperam; os de outros leads seguem normalmente.
+
+### O que a tradução perde, e o que se faz a respeito
+
+| Na Marina | No juridico |
+|---|---|
+| 7 fontes de lead | só 4 origens (`INSTAGRAM_META_ADS`, `GOOGLE_ADS`, `TV`, `INDICACAO`) |
+| tipo de contrato | não tem campo |
+| tem o contrato em mãos | não tem campo |
+
+WhatsApp, e-mail, LinkedIn e "outro" viram `INDICACAO`, e o `metadadosJson` do
+lead é calculado no servidor do juridico, que ignora o que o cliente manda.
+
+Tudo o que não cabe num campo vai no **texto do primeiro contato**, que é livre e
+vira histórico do lead. Nada se perde em silêncio.
+
+### Atritos conhecidos, anotados e não resolvidos
+
+- **Dois rodízios.** O juridico distribui leads por ponteiro circular; a Marina
+  distribui reuniões por carga. Convivem porque cada um decide uma coisa
+  diferente: o juridico decide de quem é o lead, a Marina decide quem atende a
+  reunião. Vira problema no dia em que alguém quiser um número único de "leads
+  por consultor".
+- **CPF.** A Marina não coleta. O juridico deduplica por CPF, e-mail e telefone;
+  se a pessoa já existir lá cadastrada **só** por CPF, a Marina não consegue
+  casar sozinha e o item vai para a lista de falhados, para uma pessoa resolver.
+
+---
+
 ## Estrutura
 
 ```
@@ -257,10 +345,12 @@ app/
   routing.py       ← distribuição por carga
   booking.py       ← reserva com trava
   calendar.py      ← interface + implementação Postgres
-  crm.py           ← costura para o juridico (no-op)
+  crm.py           ← contrato do CRM externo + fila local
+  outbox.py        ← entrega resiliente, sem travar a conversa
+  integrations/juridico/  ← TUDO que é específico do juridico mora aqui
   storage/local.py ← arquivamento de contratos
   channels/        ← base (tipos) + terminal
   cli.py           ← ponto de entrada
 scripts/           ← seed e dump_lead
-tests/             ← 242 testes
+tests/             ← 301 testes
 ```

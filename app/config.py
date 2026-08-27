@@ -29,6 +29,19 @@ class Configuracao(BaseSettings):
     doc_max_bytes: int = 20 * 1024 * 1024
     doc_extensoes: str = "pdf,jpg,jpeg,png,doc,docx"
 
+    # CRM externo (hoje o `juridico`)
+    #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
+    #: da integracao existir. Ligar e mudar uma linha.
+    juridico_ativo: bool = False
+    juridico_base_url: str = "http://localhost:3000"
+    juridico_login: str = ""
+    juridico_senha: str = ""
+    juridico_timeout_s: float = 15.0
+    #: Canal registrado no primeiro contato do juridico. Vira WHATSAPP quando o
+    #: adaptador de WhatsApp existir.
+    juridico_canal_contato: str = "WHATSAPP"
+    outbox_max_tentativas: int = 5
+
     # Apresentacao
     timezone_exibicao: str = "America/Sao_Paulo"
     log_level: str = "INFO"
