@@ -37,6 +37,13 @@ class InboundMessage:
 
     texto: str | None = None
     anexo: Anexo | None = None
+    #: O adaptador reconheceu a mensagem como uma tentativa de enviar arquivo,
+    #: mas nao conseguiu resolver. Guarda o que foi tentado.
+    #:
+    #: Sem isto a maquina responderia "nao entendi" — e quem digitou um caminho
+    #: com um caractere a menos ficaria sem saber o que houve, gastando as tres
+    #: tentativas ate ser escalado para um humano.
+    anexo_nao_resolvido: str | None = None
 
     @property
     def vazia(self) -> bool:

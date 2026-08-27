@@ -631,6 +631,18 @@ def _por_estado(
                 mensagens=[_msg(catalogo, "contrato_pulado", lead, ctx)],
                 efeitos=[GerarSlots()],
             )
+        if entrada.anexo_nao_resolvido:
+            # Quis mandar arquivo e errou o caminho. Dizer o que houve evita que
+            # a pessoa gaste as tres tentativas as cegas e acabe escalada.
+            politicas = _politicas(ctx)
+            tentativas = int(ctx.get("tentativas", 0)) + 1
+            if tentativas >= politicas.max_tentativas:
+                return _falha_de_parsing(catalogo, estado, lead, ctx)
+            return Transicao(
+                novo_estado=estado,
+                ctx_updates={"tentativas": tentativas},
+                mensagens=[_msg(catalogo, "erro_arquivo_nao_encontrado", lead, ctx)],
+            )
         return _falha_de_parsing(catalogo, estado, lead, ctx)
 
     if estado is Estado.AGUARDANDO_ESCOLHA_HORARIO:

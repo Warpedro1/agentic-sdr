@@ -14,6 +14,8 @@ import asyncio
 import mimetypes
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from app.channels.base import Anexo, InboundMessage, MensagemSaida
 
@@ -36,7 +38,23 @@ class TerminalAdapter:
         anexo = self._resolver_anexo(linha)
         if anexo is not None:
             return InboundMessage(anexo=anexo)
+        if self._parece_caminho(linha):
+            # Quis mandar arquivo e nao deu. Dizer isso e melhor do que
+            # responder "nao entendi" e deixar a pessoa adivinhar.
+            return InboundMessage(texto=linha, anexo_nao_resolvido=linha.strip())
         return InboundMessage(texto=linha)
+
+    @staticmethod
+    def _parece_caminho(texto: str) -> bool:
+        limpo = texto.strip().strip('"').strip("'")
+        if not limpo:
+            return False
+        return (
+            limpo.lower().startswith("file://")
+            or "/" in limpo
+            or "\\" in limpo
+            or bool(Path(limpo).suffix)
+        )
 
     def _ler(self) -> str | None:
         try:
@@ -54,6 +72,12 @@ class TerminalAdapter:
         limpo = texto.strip().strip('"').strip("'")
         if not limpo:
             return None
+
+        # "file:///C:/..." e o que o Windows entrega ao copiar o endereco de um
+        # arquivo do navegador ou do Explorer. Sem tratar isso, quem cola do
+        # jeito mais natural recebe "nao entendi".
+        if limpo.lower().startswith("file://"):
+            limpo = url2pathname(unquote(urlparse(limpo).path))
 
         caminho = Path(limpo)
         if not caminho.suffix:

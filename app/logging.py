@@ -12,11 +12,28 @@ import structlog
 from app.config import obter_configuracao
 
 
-def configurar_logging() -> None:
+def configurar_logging(destino: str | None = None) -> None:
+    """Configura o log JSON.
+
+    `destino` e um caminho de arquivo; vazio manda para o terminal. O padrao e
+    arquivo porque, no CLI, log no terminal se intercala com a conversa e deixa
+    o atendimento ilegivel para quem esta falando com a Marina.
+    """
     config = obter_configuracao()
     nivel = getattr(logging, config.log_level.upper(), logging.INFO)
+    caminho = config.log_arquivo if destino is None else destino
 
-    logging.basicConfig(format="%(message)s", stream=sys.stderr, level=nivel)
+    if caminho:
+        logging.basicConfig(
+            format="%(message)s",
+            level=nivel,
+            handlers=[logging.FileHandler(caminho, encoding="utf-8")],
+            force=True,
+        )
+    else:
+        logging.basicConfig(
+            format="%(message)s", stream=sys.stderr, level=nivel, force=True
+        )
 
     structlog.configure(
         processors=[

@@ -377,3 +377,29 @@ async def test_slots_distribuem_entre_consultores(sessao_db, criar_sessao_db):
     # O lead escolhe um HORARIO; cada horario ja vem com um consultor resolvido.
     assert all(s["consultor_nome"] for s in slots)
     assert len({s["inicio_utc"] for s in slots}) == len(slots)
+
+
+@pytest.mark.asyncio
+async def test_caminho_errado_diz_o_que_houve_em_vez_de_nao_entendi(
+    sessao_db, criar_sessao_db
+):
+    """Regressao do teste real do Pedro: duas tentativas de enviar arquivo
+    viraram "não entendi", e a terceira teria escalado para um humano."""
+    await semear_consultores(sessao_db)
+    motor, adaptador = montar_engine(
+        criar_sessao_db,
+        [
+            txt("Pedro Guerra"),
+            txt("11 98765-4321"),
+            txt("pedro@exemplo.com.br"),
+            txt("5"),
+            txt("1"),
+            txt("1"),
+            InboundMessage(
+                texto="C:/nao/existe/Trello.pd",
+                anexo_nao_resolvido="C:/nao/existe/Trello.pd",
+            ),
+        ],
+    )
+    await motor.rodar()
+    assert adaptador.enviadas[-1].template_key == "erro_arquivo_nao_encontrado"

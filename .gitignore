@@ -25,6 +25,7 @@ storage/*
 
 # Logs
 *.log
+marina.log
 
 # Editores
 .idea/

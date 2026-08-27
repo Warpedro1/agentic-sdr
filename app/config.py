@@ -32,6 +32,9 @@ class Configuracao(BaseSettings):
     # Apresentacao
     timezone_exibicao: str = "America/Sao_Paulo"
     log_level: str = "INFO"
+    #: Arquivo de log. Vazio = escreve no terminal, o que no CLI mistura JSON no
+    #: meio da conversa e deixa o atendimento ilegivel.
+    log_arquivo: str = "marina.log"
 
     @property
     def extensoes_permitidas(self) -> frozenset[str]:

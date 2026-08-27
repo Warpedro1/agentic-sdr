@@ -119,3 +119,28 @@ def test_render_substitui_variaveis():
 def test_render_reclama_de_variavel_faltando():
     with pytest.raises(KeyError):
         obter_catalogo().render("pergunta_telefone")
+
+
+def test_adaptador_aceita_file_uri_e_caminho_comum(tmp_path):
+    """file:///C:/... e o que o Windows entrega ao copiar o endereco do arquivo."""
+    from app.channels.terminal import TerminalAdapter
+
+    arquivo = tmp_path / "contrato.pdf"
+    arquivo.write_bytes(b"%PDF-1.4 x")
+
+    caminho = str(arquivo)
+    uri = arquivo.as_uri()
+
+    assert TerminalAdapter._resolver_anexo(caminho) is not None
+    assert TerminalAdapter._resolver_anexo(uri) is not None
+    assert TerminalAdapter._resolver_anexo(f'"{caminho}"') is not None
+
+
+def test_adaptador_sinaliza_caminho_que_nao_existe():
+    from app.channels.terminal import TerminalAdapter
+
+    assert TerminalAdapter._parece_caminho("C:/nao/existe/Trello.pd") is True
+    assert TerminalAdapter._parece_caminho("file:///C:/x/y.pdf") is True
+    # Uma resposta normal nao pode ser confundida com tentativa de anexo.
+    assert TerminalAdapter._parece_caminho("Pedro Guerra") is False
+    assert TerminalAdapter._parece_caminho("1") is False

@@ -38,6 +38,11 @@ contrato_recebido: |
   Recebido, {nome}! Encaminhei para o time fazer a análise preliminar.
   A análise é feita por um consultor, nunca automaticamente.
 
+erro_arquivo_nao_encontrado: |
+  Não encontrei esse arquivo aqui. Confere se o caminho está completo — no
+  Explorer dá para clicar com o botão direito e escolher "Copiar como caminho".
+  Ou digite PULAR e você envia depois.
+
 contrato_pulado:  "Sem problema. Você pode enviar depois ou levar na reunião."
 sem_contrato:     "Tudo bem. O consultor te orienta sobre como pedir a segunda via ao banco."
 
