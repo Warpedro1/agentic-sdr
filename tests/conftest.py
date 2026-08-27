@@ -72,6 +72,10 @@ async def engine_teste():
         _url_teste(), connect_args={"connect_timeout": 5}
     )
     async with engine.begin() as conexao:
+        # drop antes do create: `create_all` sozinho nao ALTERA tabela que ja
+        # existe, entao uma coluna nova no modelo passaria despercebida e os
+        # testes rodariam contra um esquema velho.
+        await conexao.run_sync(Base.metadata.drop_all)
         await conexao.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()

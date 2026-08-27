@@ -1,0 +1,67 @@
+>> [boas_vindas]
+   Olá! Eu sou a Marina, assistente virtual da Leve Soluções Financeiras e Empresariais.
+   Vou te fazer algumas perguntas rápidas para entender seu caso e já deixar uma conversa
+   agendada com um dos nossos consultores. Leva menos de 2 minutos.
+   Seus dados são usados apenas para este atendimento. A qualquer momento, digite SAIR
+   para encerrar.
+
+>> [pergunta_nome]
+   Para começar, como posso te chamar?
+
+<< Pedro Guerra
+
+>> [pergunta_telefone]
+   Prazer, Pedro! Qual o seu telefone com DDD? (ex.: 11 98765-4321)
+
+<< 11 98765-4321
+
+>> [pergunta_email]
+   Perfeito. E qual o seu e-mail? É por ele que envio o convite da reunião.
+
+<< pedro@exemplo.com.br
+
+>> [pergunta_fonte]
+   Como você chegou até a Leve? Responda com o número:
+   1 - Anúncio      2 - WhatsApp     3 - E-mail
+   4 - LinkedIn     5 - Indicação    6 - Google      7 - Outro
+
+<< 5
+
+>> [pergunta_tipo_contrato]
+   E qual tipo de contrato você quer revisar?
+   1 - Empréstimo consignado (desconto em folha ou INSS)
+   2 - Empréstimo pessoal
+   3 - Cartão de crédito
+
+<< 1
+
+>> [pergunta_contrato]
+   Obrigada! Agora uma pergunta importante: você tem em mãos o contrato do empréstimo
+   que o banco te forneceu?
+   1 - Sim, tenho     2 - Não tenho
+
+<< 2
+
+>> [sem_contrato]
+   Tudo bem. O consultor te orienta sobre como pedir a segunda via ao banco.
+
+>> [oferta_horarios]
+   Vamos agendar sua conversa? Estes são os horários disponíveis:
+   1 - quarta-feira, 2 de setembro às 11:30
+   2 - quarta-feira, 2 de setembro às 12:45
+   3 - quarta-feira, 2 de setembro às 14:00
+   4 - quarta-feira, 2 de setembro às 15:15
+   5 - quarta-feira, 2 de setembro às 16:30
+   Responda com o número.
+
+<< 1
+
+>> [confirmacao]
+   Confirmando: quarta-feira, 2 de setembro, às 11:30, com Ana Ribeiro. Está certo?
+   1 - Sim  2 - Escolher outro
+
+<< 1
+
+>> [agendado]
+   Prontinho, Pedro! Sua conversa está agendada para quarta-feira, 2 de setembro às 11:30 com Ana Ribeiro.
+   Enviei a confirmação para pedro@exemplo.com.br. Se precisar remarcar, é só me chamar.

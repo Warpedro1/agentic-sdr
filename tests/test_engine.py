@@ -130,7 +130,7 @@ async def test_transcricao_registra_entrada_e_saida(sessao_db, criar_sessao_db):
             await sessao_db.execute(
                 select(Mensagem)
                 .where(Mensagem.conversa_id == conversa_id)
-                .order_by(Mensagem.criada_em, Mensagem.id)
+                .order_by(Mensagem.sequencia)
             )
         )
         .scalars()

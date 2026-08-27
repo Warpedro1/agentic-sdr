@@ -106,7 +106,7 @@ class Conversa(Base):
 
     lead: Mapped[Lead | None] = relationship(back_populates="conversas")
     mensagens: Mapped[list[Mensagem]] = relationship(
-        back_populates="conversa", order_by="Mensagem.criada_em"
+        back_populates="conversa", order_by="Mensagem.sequencia"
     )
 
     __table_args__ = (
@@ -121,6 +121,12 @@ class Mensagem(Base):
     conversa_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversas.id", ondelete="CASCADE"), nullable=False
     )
+    #: Ordem dentro da conversa. NAO da para confiar em `criada_em` para isso: o
+    #: `now()` do Postgres e o timestamp da TRANSACAO, entao mensagens gravadas
+    #: juntas ficam com a mesma hora e o desempate cairia no UUID, que e
+    #: aleatorio. A transcricao e o dataset de avaliacao do projeto — ordem
+    #: errada corrompe o dataset.
+    sequencia: Mapped[int] = mapped_column(Integer, nullable=False)
     direcao: Mapped[str] = mapped_column(String(3), nullable=False)
     template_key: Mapped[str | None] = mapped_column(String(60))
     conteudo: Mapped[str] = mapped_column(Text, nullable=False)
@@ -128,7 +134,10 @@ class Mensagem(Base):
 
     conversa: Mapped[Conversa] = relationship(back_populates="mensagens")
 
-    __table_args__ = (Index("ix_mensagens_conversa_criada", "conversa_id", "criada_em"),)
+    __table_args__ = (
+        Index("ix_mensagens_conversa_criada", "conversa_id", "criada_em"),
+        UniqueConstraint("conversa_id", "sequencia", name="uq_mensagem_sequencia"),
+    )
 
 
 class Consultor(Base):

@@ -77,6 +77,12 @@ class Execucao:
     lead_id: uuid.UUID | None = None
     lead: dict = field(default_factory=dict)
     ctx: dict = field(default_factory=dict)
+    #: Contador da transcricao. Ver o comentario em models.Mensagem.sequencia.
+    proxima_sequencia: int = 0
+
+    def sequencia(self) -> int:
+        self.proxima_sequencia += 1
+        return self.proxima_sequencia
 
 
 class Engine:
@@ -201,6 +207,7 @@ class Engine:
                 sessao.add(
                     Mensagem(
                         conversa_id=execucao.conversa_id,
+                        sequencia=execucao.sequencia(),
                         direcao=Direcao.SAIDA.value,
                         template_key=mensagem.template_key,
                         conteudo=mensagem.conteudo,
@@ -237,6 +244,7 @@ class Engine:
             sessao.add(
                 Mensagem(
                     conversa_id=execucao.conversa_id,
+                    sequencia=execucao.sequencia(),
                     direcao=Direcao.ENTRADA.value,
                     template_key=None,
                     conteudo=conteudo or "",

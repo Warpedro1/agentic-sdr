@@ -125,7 +125,7 @@ async def main(telefone: str) -> int:
                     await s.execute(
                         select(Mensagem)
                         .where(Mensagem.conversa_id == conversa.id)
-                        .order_by(Mensagem.criada_em, Mensagem.id)
+                        .order_by(Mensagem.sequencia)
                     )
                 )
                 .scalars()
