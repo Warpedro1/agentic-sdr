@@ -18,10 +18,12 @@ from datetime import UTC, datetime, time
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -69,6 +71,12 @@ class Lead(Base):
     consentimento_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     canal: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    #: Id deste lead no CRM externo (hoje o `juridico`). Nome generico de
+    #: proposito: a Marina vai atender mais de um sistema, e o dia em que dois
+    #: backends coexistirem isto vira uma tabela de ligacao, nao uma coluna por
+    #: fornecedor.
+    crm_lead_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
     criado_em: Mapped[datetime] = _agora()
     atualizado_em: Mapped[datetime] = mapped_column(
@@ -147,6 +155,9 @@ class Consultor(Base):
     nome: Mapped[str] = mapped_column(String(160), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: Usuario correspondente no CRM externo. E o que faz o nome que a Marina
+    #: promete ao lead ser o mesmo que aparece na agenda do outro sistema.
+    crm_usuario_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
     regras: Mapped[list[RegraDisponibilidade]] = relationship(
         back_populates="consultor"
@@ -254,6 +265,47 @@ class OptOut(Base):
     )
 
 
+class CrmOutbox(Base):
+    """Fila de entrega para o CRM externo.
+
+    A conversa NAO pode travar porque outro sistema esta lento ou fora do ar.
+    O engine grava a intencao aqui — operacao local e rapida — e a entrega
+    acontece a parte, com nova tentativa. Se o CRM voltar depois, tudo chega.
+
+    Sem isto, uma indisponibilidade do juridico viraria uma indisponibilidade da
+    Marina, que e o oposto do que se quer de uma automacao de atendimento.
+    """
+
+    __tablename__ = "crm_outbox"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: Ordem de entrega. Mesmo motivo de `Mensagem.sequencia`: `criado_em` usa o
+    #: `now()` do Postgres, que e o timestamp da TRANSACAO — tres itens gravados
+    #: no mesmo passo ficam com a hora identica e a ordem cairia no UUID, que e
+    #: aleatorio. Numa fila isso significa tentar agendar antes de o lead existir.
+    sequencia: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False), nullable=False, unique=True
+    )
+    #: "lead", "qualificacao" ou "agendamento".
+    tipo: Mapped[str] = mapped_column(String(30), nullable=False)
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE")
+    )
+    payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    tentativas: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    proxima_tentativa_em: Mapped[datetime] = _agora()
+    entregue_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_erro: Mapped[str | None] = mapped_column(Text)
+    criado_em: Mapped[datetime] = _agora()
+
+    __table_args__ = (
+        Index("ix_outbox_pendentes", "entregue_em", "proxima_tentativa_em"),
+        Index("ix_outbox_lead_sequencia", "lead_id", "sequencia"),
+    )
+
+
 __all__ = [
     "Base",
     "Lead",
@@ -264,4 +316,5 @@ __all__ = [
     "Agendamento",
     "Documento",
     "OptOut",
+    "CrmOutbox",
 ]

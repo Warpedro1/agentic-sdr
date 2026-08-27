@@ -1,24 +1,28 @@
-"""Costura para o CRM externo (o sistema `juridico`).
+"""Interface com o CRM externo.
 
-A integracao esta FORA do MVP e hoje esta bloqueada: o `juridico` nao tem API
-maquina-a-maquina. O painel dele anuncia `POST /api/public/oauth/token`, mas essa
-rota nao existe no servidor.
+A Marina vai atender mais de um sistema. Este arquivo define o CONTRATO; cada
+backend implementa o seu em `app/integrations/<nome>/`.
 
-Entao aqui fica so o contrato, com uma implementacao que apenas registra no log.
-Nao ha cliente HTTP e nao ha contrato de API inventado — quando a porta existir,
-basta uma segunda implementacao desta mesma interface.
+Duas implementações vivem aqui porque nenhuma delas é específica de backend:
 
-Dois pontos de atrito conhecidos para quando esse dia chegar (detalhados no
-README): o `juridico` distribui leads por ponteiro circular, e nao por carga como
-aqui; e o `Lead` de la tem chave unica em CPF e e-mail, mas nao em telefone, que
-e a chave de deduplicacao daqui.
+- `CrmSinkNoop` — não envia nada. É o padrão quando a integração está desligada,
+  e é o que mantém o MVP funcionando sozinho.
+- `CrmSinkOutbox` — grava a intenção na fila local e devolve na hora. A entrega
+  de verdade acontece à parte, por um entregador específico do backend.
+
+O engine só conhece esta interface. Ele nunca sabe qual sistema está do outro
+lado, nem se existe algum.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.logging import obter_logger
+from app.outbox import TipoEnvio, enfileirar
 
 logger = obter_logger("crm")
 
@@ -26,17 +30,60 @@ logger = obter_logger("crm")
 class CrmSink(Protocol):
     async def registrar_lead(self, lead: dict) -> None: ...
 
+    async def registrar_qualificacao(self, lead: dict) -> None: ...
+
     async def registrar_agendamento(self, agendamento: dict) -> None: ...
 
 
 class CrmSinkNoop:
-    """Nao envia nada para lugar nenhum. Só deixa rastro no log."""
+    """Não envia nada para lugar nenhum. Só deixa rastro no log."""
 
     async def registrar_lead(self, lead: dict) -> None:
-        logger.info("crm_lead_pendente", lead_id=lead.get("id"))
+        logger.info("crm_desligado_lead", lead_id=lead.get("id"))
+
+    async def registrar_qualificacao(self, lead: dict) -> None:
+        logger.info("crm_desligado_qualificacao", lead_id=lead.get("id"))
 
     async def registrar_agendamento(self, agendamento: dict) -> None:
         logger.info(
-            "crm_agendamento_pendente",
+            "crm_desligado_agendamento",
             agendamento_id=agendamento.get("agendamento_id"),
         )
+
+
+class CrmSinkOutbox:
+    """Enfileira localmente. NUNCA levanta erro para o engine.
+
+    Se a gravação na fila falhar, o erro é registrado no log e a conversa segue.
+    A alternativa — deixar a exceção subir — faria um problema de integração
+    derrubar um atendimento em andamento, que é exatamente o que não pode
+    acontecer.
+    """
+
+    def __init__(self, criar_sessao: async_sessionmaker[AsyncSession]) -> None:
+        self._criar_sessao = criar_sessao
+
+    async def _enfileirar(self, tipo: TipoEnvio, payload: dict) -> None:
+        lead_id = payload.get("lead_id")
+        try:
+            async with self._criar_sessao() as sessao:
+                await enfileirar(
+                    sessao,
+                    tipo,
+                    payload,
+                    lead_id=uuid.UUID(str(lead_id)) if lead_id else None,
+                )
+                await sessao.commit()
+        except Exception as erro:  # noqa: BLE001 - a conversa nao pode cair por isso
+            logger.warning(
+                "crm_enfileiramento_falhou", tipo=tipo.value, erro=str(erro)
+            )
+
+    async def registrar_lead(self, lead: dict) -> None:
+        await self._enfileirar(TipoEnvio.LEAD, dict(lead))
+
+    async def registrar_qualificacao(self, lead: dict) -> None:
+        await self._enfileirar(TipoEnvio.QUALIFICACAO, dict(lead))
+
+    async def registrar_agendamento(self, agendamento: dict) -> None:
+        await self._enfileirar(TipoEnvio.AGENDAMENTO, dict(agendamento))
