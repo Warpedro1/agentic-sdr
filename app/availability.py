@@ -126,3 +126,28 @@ async def gerar_candidatos(
 
     candidatos.sort(key=lambda c: (c.inicio_utc, c.consultor_nome))
     return candidatos
+
+
+def montar_ofertas(
+    candidatos: list[Candidato],
+    cargas: dict[uuid.UUID, tuple[int, datetime | None]],
+    limite: int,
+) -> list[Candidato]:
+    """Mescla os consultores num unico menu de horarios.
+
+    O lead escolhe um HORARIO, nao um consultor. Para cada horario distinto,
+    quem atende e decidido aqui pelo round-robin por carga — e ja fica definido,
+    porque a mensagem de confirmacao diz o nome antes de reservar.
+    """
+    from app.routing import escolher_consultor
+
+    por_horario: dict[datetime, list[Candidato]] = {}
+    for candidato in candidatos:
+        por_horario.setdefault(candidato.inicio_utc, []).append(candidato)
+
+    ofertas: list[Candidato] = []
+    for inicio in sorted(por_horario)[:limite]:
+        escolhido = escolher_consultor(por_horario[inicio], cargas)
+        if escolhido is not None:
+            ofertas.append(escolhido)
+    return ofertas

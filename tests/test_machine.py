@@ -119,9 +119,31 @@ def test_terceira_falha_entrega_para_humano():
         Estado.AGUARDANDO_TELEFONE, {}, ctx(nome="Pedro", tentativas=2), txt("abc")
     )
     assert t.novo_estado is Estado.ESCALADO_HUMANO
-    assert chaves(t) == ["escalonamento"]
     assert EscalarParaHumano in tipos_efeito(t)
     assert EncerrarConversa in tipos_efeito(t)
+    # Escalou ANTES de haver telefone: nao pode prometer um retorno que o time
+    # nao tem como fazer.
+    assert chaves(t) == ["escalonamento_sem_contato"]
+    assert not t.mensagens[0].conteudo.rstrip().endswith("no .")
+
+
+def test_escalonamento_com_telefone_promete_o_retorno():
+    t = handle(
+        Estado.AGUARDANDO_FONTE,
+        LEAD_COMPLETO,
+        ctx(),
+        txt("quero falar com um humano"),
+    )
+    assert chaves(t) == ["escalonamento"]
+    assert "+5511987654321" in t.mensagens[0].conteudo
+
+
+def test_nenhuma_mensagem_sai_com_variavel_vazia_pendurada():
+    # Rede contra o defeito de "te chama no ." em qualquer template futuro.
+    for estado in (Estado.AGUARDANDO_NOME, Estado.AGUARDANDO_TELEFONE):
+        t = handle(estado, {}, ctx(tentativas=2), txt("???"))
+        for mensagem in t.mensagens:
+            assert not mensagem.conteudo.rstrip().endswith(("no .", "para .", "em ."))
 
 
 def test_limite_de_tentativas_respeita_a_politica():

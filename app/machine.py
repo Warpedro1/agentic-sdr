@@ -131,6 +131,12 @@ SEQUENCIA_COLETA: tuple[tuple[str, Estado, str], ...] = (
     ("possui_contrato", Estado.AGUARDANDO_TEM_CONTRATO, "pergunta_contrato"),
 )
 
+#: Estados cujo sentido depende da lista de horarios que estava no ctx. Como essa
+#: lista e transitoria, retomar uma conversa parada num deles exige recalcular.
+ESTADOS_QUE_DEPENDEM_DE_SLOTS: frozenset[Estado] = frozenset(
+    {Estado.AGUARDANDO_ESCOLHA_HORARIO, Estado.AGUARDANDO_CONFIRMACAO}
+)
+
 #: Pergunta que cada estado repete quando o lead responde algo que nao da para
 #: entender, e quando ele digita "voltar".
 PERGUNTA_DO_ESTADO: dict[Estado, str] = {
@@ -209,6 +215,19 @@ def _msg(catalogo: CatalogoMensagens, chave: str, lead: dict, ctx: dict) -> Mens
     return catalogo.render(chave, **_valores_do_template(chave, lead, ctx))
 
 
+def _chave_escalonamento(lead: dict, ctx: dict) -> str:
+    """Escalar sem telefone precisa de outra copy.
+
+    O caso mais comum de escalonamento e tres tentativas de telefone invalido —
+    exatamente quando nao ha telefone. A mensagem padrao terminaria em "alguem te
+    chama no ." e prometeria um retorno que o time nao tem como fazer.
+    """
+    tem_contato = bool(
+        lead.get("telefone_e164") or ctx.get("telefone") or lead.get("email")
+    )
+    return "escalonamento" if tem_contato else "escalonamento_sem_contato"
+
+
 def _repetir_pergunta(
     catalogo: CatalogoMensagens, estado: Estado, lead: dict, ctx: dict
 ) -> MensagemSaida:
@@ -231,7 +250,7 @@ def _falha_de_parsing(
         return Transicao(
             novo_estado=Estado.ESCALADO_HUMANO,
             ctx_updates={"tentativas": 0},
-            mensagens=[_msg(catalogo, "escalonamento", lead, ctx)],
+            mensagens=[_msg(catalogo, _chave_escalonamento(lead, ctx), lead, ctx)],
             efeitos=[
                 EscalarParaHumano(motivo=f"{politicas.max_tentativas} falhas em {estado}"),
                 EncerrarConversa(),
@@ -410,7 +429,7 @@ def handle(
         if comando is ComandoGlobal.HUMANO:
             return Transicao(
                 novo_estado=Estado.ESCALADO_HUMANO,
-                mensagens=[_msg(catalogo, "escalonamento", lead, ctx)],
+                mensagens=[_msg(catalogo, _chave_escalonamento(lead, ctx), lead, ctx)],
                 efeitos=[
                     EscalarParaHumano(motivo="pedido do lead"),
                     EncerrarConversa(),
@@ -523,6 +542,14 @@ def _por_estado(
         if resposta:
             anterior = (ctx.get("reconhecimento") or {}).get("ultimo_estado")
             destino = Estado(anterior) if anterior else Estado.AGUARDANDO_EMAIL
+            if destino in ESTADOS_QUE_DEPENDEM_DE_SLOTS:
+                # Retomar direto na escolha de horario deixaria o lead preso: a
+                # lista ofertada era transitoria e nao existe mais. Recalcula.
+                return Transicao(
+                    novo_estado=Estado.CARREGANDO_HORARIOS,
+                    ctx_updates={"tentativas": 0, "slot_escolhido": None},
+                    efeitos=[GerarSlots()],
+                )
             return Transicao(
                 novo_estado=destino,
                 ctx_updates={"tentativas": 0},

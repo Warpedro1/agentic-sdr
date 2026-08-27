@@ -44,7 +44,13 @@ def pytest_asyncio_loop_factories():
 
 @pytest_asyncio.fixture(scope="session")
 async def engine_teste():
-    admin = create_async_engine(_url_admin(), isolation_level="AUTOCOMMIT")
+    # Sem connect_timeout, um Postgres fora do ar deixa a suite pendurada para
+    # sempre em vez de cair no skip logo abaixo.
+    admin = create_async_engine(
+        _url_admin(),
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": 5},
+    )
     try:
         async with admin.connect() as conexao:
             existe = await conexao.scalar(
@@ -62,7 +68,9 @@ async def engine_teste():
     finally:
         await admin.dispose()
 
-    engine = create_async_engine(_url_teste())
+    engine = create_async_engine(
+        _url_teste(), connect_args={"connect_timeout": 5}
+    )
     async with engine.begin() as conexao:
         await conexao.run_sync(Base.metadata.create_all)
     yield engine

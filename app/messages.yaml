@@ -89,3 +89,10 @@ retorno_reconhecido: |
   Bem-vindo de volta, {nome}! Já tenho seus dados aqui, então vamos direto ao ponto.
 
 opt_out_mantido:  "Sem problema, mantive seu atendimento encerrado. Se mudar de ideia, é só chamar."
+
+# O escalonamento mais comum e justamente o que acontece ANTES de haver telefone
+# (tres tentativas de numero invalido). Sem esta variante, a mensagem terminaria
+# em "alguem te chama no ." — e o time nao teria como retornar de fato.
+escalonamento_sem_contato: |
+  Acho melhor te passar para um consultor. Como ainda não consegui registrar um
+  telefone válido, me chame de novo quando puder — aí eu sigo daqui com você.
