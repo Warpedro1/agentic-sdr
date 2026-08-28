@@ -46,19 +46,21 @@ async def carga_futura(
     }
 
 
-def escolher_consultor(
+def ordenar_por_carga(
     candidatos: Sequence,
     cargas: dict[uuid.UUID, tuple[int, datetime | None]],
-):
-    """Entre os livres naquele horario, o de menor carga.
+) -> list:
+    """Os livres naquele horario, do menos carregado para o mais carregado.
 
     `candidatos` sao objetos com `consultor_id` e `consultor_nome`, todos para o
     MESMO horario. O nome entra na chave de ordenacao so para o desempate ser
     estavel — sem isso, dois consultores empatados alternariam a cada execucao e
     os testes ficariam intermitentes.
+
+    A lista inteira importa, e nao so o primeiro: a reuniao nasce sem dono, entao
+    a reserva percorre esta ordem ate uma dar certo. O horario so e perdido quando
+    TODOS acabam.
     """
-    if not candidatos:
-        return None
 
     def chave(candidato):
         quantidade, ultimo = cargas.get(candidato.consultor_id, (0, None))
@@ -71,4 +73,13 @@ def escolher_consultor(
             candidato.consultor_nome,
         )
 
-    return min(candidatos, key=chave)
+    return sorted(candidatos, key=chave)
+
+
+def escolher_consultor(
+    candidatos: Sequence,
+    cargas: dict[uuid.UUID, tuple[int, datetime | None]],
+):
+    """Entre os livres naquele horario, o de menor carga."""
+    ordenados = ordenar_por_carga(candidatos, cargas)
+    return ordenados[0] if ordenados else None

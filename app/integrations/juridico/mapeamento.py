@@ -143,20 +143,42 @@ def payload_lead(lead: dict) -> dict:
     }
 
 
-def payload_agendamento(agendamento: dict) -> dict:
-    """Corpo do POST /api/admin/leads/:id/agendamentos."""
-    corpo = {
-        "dataHora": agendamento["inicio_utc"],
-        "dataFim": agendamento.get("fim_utc"),
-        "assunto": agendamento.get(
-            "assunto", "Reunião de revisão de contrato (agendada pela Marina)"
-        ),
-        "observacao": agendamento.get("observacao"),
+def payload_tarefa(
+    agendamento: dict,
+    lead: dict,
+    responsavel_id: str,
+    crm_lead_id: str | None = None,
+) -> dict:
+    """Corpo do POST /api/admin/crm/tarefas — a reunião, em aberto.
+
+    Duas decisões desta tradução:
+
+    **`responsavelId` é o próprio usuário de serviço.** O juridico exige
+    responsável em toda tarefa, então "em aberto" é representado por uma tarefa
+    parada no nome do robô. Quem tiver disponibilidade troca o responsável para
+    si e a tarefa passa a ser dele.
+
+    **Quem é o lead vai no texto.** A tarefa do juridico não tem campo de lead —
+    só de cliente, empresa e negociação. Sem o nome e o contato escritos aqui,
+    quem pegasse a tarefa veria "Sem vínculo" no calendário e não teria com quem
+    falar.
+    """
+    nome = lead.get("nome") or "Lead sem nome"
+    contato = lead.get("telefone_e164") or lead.get("email") or "sem contato"
+
+    linhas = ["Reunião agendada pela Marina.", f"Lead: {nome} — {contato}."]
+    if crm_lead_id:
+        linhas.append(f"Cadastro no CRM: {crm_lead_id}.")
+    qualificacao = texto_qualificacao(lead)
+    if qualificacao:
+        linhas.append(qualificacao)
+    linhas.append("Tarefa em aberto: quem for atender, assuma como responsável.")
+
+    return {
+        "assunto": f"Reunião — {nome} ({contato})",
+        "tipo": "REUNIAO",
+        "data": agendamento["data_iso"],
+        "horario": agendamento["hora"],
+        "responsavelId": responsavel_id,
+        "descricao": "\n".join(linhas),
     }
-    consultor = agendamento.get("juridico_consultor_id")
-    if consultor:
-        # Só quando o consultor da Marina está ligado a um usuário real do
-        # juridico. Sem isso o juridico usa o consultor do lead, e o nome que a
-        # Marina prometeu ao lead poderia não bater.
-        corpo["consultorId"] = consultor
-    return {chave: valor for chave, valor in corpo.items() if valor is not None}

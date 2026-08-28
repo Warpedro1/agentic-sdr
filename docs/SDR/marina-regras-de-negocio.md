@@ -47,14 +47,40 @@ toda conversa é gravada por inteiro.
 
 1. **Nome**
 2. **Telefone** (com DDD)
-3. **E-mail** — obrigatório: é por ele que vai o convite da reunião
+3. **E-mail** — só se o telefone não sair
 4. **Como chegou até a empresa** (anúncio, WhatsApp, e-mail, LinkedIn,
-   indicação, Google, outro)
+   indicação, Google, outro) — não bloqueia
 5. **Que tipo de contrato quer revisar** (consignado, pessoal, cartão de crédito)
 6. **Tem o contrato em mãos?** — se sim, oferece receber o arquivo
 7. **Escolha do horário** e **confirmação**
 
 **[FEITO]** Todo o fluxo, do "olá" ao agendamento gravado.
+
+### O que basta para cadastrar
+
+> **[FEITO — regra alterada em 27/08/2026]** Antes o e-mail era obrigatório e a
+> fonte também travava o cadastro. Não travam mais.
+
+**Nome mais UM meio de contato — telefone ou e-mail — bastam.**
+
+- **Com telefone válido, a Marina nem pergunta o e-mail.** Um contato é o
+  suficiente, e cada pergunta a mais é uma chance a mais de a pessoa desistir no
+  meio.
+- **Se o telefone não sair depois das tentativas, ela pede o e-mail** em vez de
+  entregar a conversa para um humano. Antes esse era o motivo mais comum de
+  escalonamento — e desperdiçava um lead que ainda dava para cadastrar.
+- **Sem telefone e sem e-mail, aí sim escala.** Não há para onde retornar, e
+  prometer retorno seria mentira.
+- **A fonte de referência não bloqueia.** Se a Marina não entender a resposta
+  depois das tentativas, ela diz *"deixa isso pra lá"* e segue. É dado de
+  marketing: não muda nada do que o consultor precisa preparar.
+- **Tipo de contrato e "tem o contrato em mãos" continuam obrigatórios.** Esses
+  qualificam o caso — sem eles o consultor entra na reunião às cegas.
+
+**Consequência para quem volta:** o reconhecimento é pelo telefone quando existe,
+e pelo e-mail quando não existe. Quem se cadastrou só por e-mail e depois escreve
+de outro canal pode não ser reconhecido — é o preço de aceitar meio contato, e é
+menor do que perder o lead inteiro.
 
 ### Regras de interpretação
 
@@ -105,9 +131,14 @@ mesmo ponto**, ela para de insistir e passa para um humano.
 Sem esse limite, o lead ficaria num laço e desistiria em silêncio — que é a pior
 saída possível, porque ninguém fica sabendo que ele desistiu.
 
-**Detalhe que vale registrar:** quando o escalonamento acontece por erro no
-telefone, a Marina **não promete** que alguém vai ligar — porque justamente não
-há telefone válido para ligar. Ela pede que a pessoa volte a chamar.
+**Duas exceções ao limite**, ambas por decisão de 27/08/2026:
+
+- **Telefone** — três erros não escalam mais; a Marina pede o e-mail.
+- **Fonte de referência** — três erros não escalam; ela segue sem a fonte.
+
+**Detalhe que vale registrar:** quando o escalonamento acontece sem nenhum
+contato conhecido, a Marina **não promete** que alguém vai ligar — porque não há
+para onde ligar nem para onde escrever. Ela pede que a pessoa volte a chamar.
 
 ---
 
@@ -157,35 +188,57 @@ pior do que ignorar a divergência.
 3. Horários já ocupados saem da lista.
 4. Horários muito próximos de agora saem da lista (padrão: **antecedência mínima
    de 2 horas**).
-5. Os horários de todos os consultores são misturados, ordenados, e os **5
+5. Os horários de todos os consultores são misturados num menu só. Um horário
+   aparece **uma vez**, e aparece se **alguém** estiver livre nele. Os **5
    primeiros** são oferecidos.
 
-O lead escolhe um **horário**, não um consultor. Quem vai atender é decidido pela
-Marina.
+O lead escolhe um **horário**, e só isso.
 
-### 5.2 Quem atende
+### 5.2 Quem atende: ninguém, até alguém pegar
 
-**[FEITO]** Entre os consultores livres naquele horário, ganha **quem tem menos
-reuniões futuras**. Empate desempata por quem está há mais tempo sem receber.
+> **[FEITO — regra alterada em 27/08/2026]** Antes a Marina escolhia um consultor
+> e **dizia o nome dele ao lead** ("agendada com Ana Ribeiro"). Não faz mais.
 
-**Por que não por rodízio circular:** com rodízio, um consultor de férias
-continua "recebendo a vez" e a fila trava. Por carga, a distribuição se
-reequilibra sozinha.
+**A reunião nasce sem dono.** Ela vai para o juridico como uma **tarefa de CRM em
+aberto**, e quem tiver disponibilidade assume.
+
+**Por que mudou:** prometer um nome só faz sentido se aquela pessoa for mesmo
+quem aparece. Como a tarefa fica aberta para o time pegar, o nome prometido e o
+nome que aparece podem ser diferentes — e aí a promessa vira problema na frente
+do lead. Melhor não prometer.
+
+**O que a Marina fala agora:** confirma **data e hora**, e diz que a conversa é
+"com um dos nossos consultores".
+
+#### O consultor que continua existindo nos bastidores
+
+A Marina ainda calcula a agenda **por pessoa** — precisa saber quem trabalha
+quando para saber se o horário cabe. E ao reservar, ela consome a vaga de um
+consultor específico.
+
+**Isso é contagem de capacidade, não atribuição.** Aquele consultor não é
+prometido a ninguém, não vai no que é enviado ao juridico, e o lead nunca vê o
+nome. Se outra pessoa pegar a tarefa, a agenda do consultor reservado fica
+bloqueada à toa — imprecisão aceita de propósito, porque a alternativa era
+perder a proteção contra dupla marcação que o banco já dá.
 
 > **Atrito conhecido:** o juridico distribui *leads* por rodízio circular; a
-> Marina distribui *reuniões* por carga. Convivem porque decidem coisas
-> diferentes — o juridico decide de quem é o lead, a Marina decide quem atende a
-> reunião. Vira problema no dia em que alguém quiser um número único de "leads
-> por consultor".
+> Marina calcula capacidade por carga. Convivem porque decidem coisas diferentes
+> — o juridico decide de quem é o lead, a Marina decide se cabe mais uma reunião
+> naquele horário.
 
 ### 5.3 Duas pessoas escolhendo o mesmo horário
 
 **[FEITO]** Acontece na primeira semana de uso. A Marina tem **duas** defesas:
 uma trava enquanto reserva, e uma regra no banco que recusa a segunda marcação.
 
-Quando a segunda defesa dispara, **isso não é erro** — é o caminho normal do
-segundo lead, que recebe *"Ih, esse horário acabou de ser preenchido. Escolhe
-outro?"* e a lista recalculada.
+**[FEITO]** E o horário só é perdido quando **todos** os consultores daquele
+horário acabarem. Se o primeiro for tomado entre a oferta e a confirmação, a
+Marina tenta o próximo em silêncio, em vez de fazer o lead escolher de novo.
+
+Quando não sobra ninguém, **isso não é erro** — é o caminho normal do segundo
+lead, que recebe *"Ih, esse horário acabou de ser preenchido. Escolhe outro?"* e
+a lista recalculada.
 
 **[DECIDIDO]** A trava vale por **pessoa**. Se o mesmo consultor atender mais de
 uma filial, ele nunca é marcado em duas reuniões no mesmo horário — a agenda dele
@@ -258,42 +311,39 @@ agendamento gravado sem filial pode **não aparecer** no calendário de um
 consultor que só enxerga a própria unidade. Hoje não há filial cadastrada, então
 o risco é teórico.
 
-### Papel próprio para a Marina — implementação futura
+### Papel próprio para a Marina
 
-**[EM ABERTO]** A Marina deve deixar de usar um papel de pessoa e passar a ter um
-**papel próprio, com permissões próprias**, desenhado para um robô.
+**[FEITO — 27/08/2026]** A Marina deixou de usar um papel de pessoa. O papel dela
+agora é **`ROBO_SDR`**, e ele abre **só o módulo CRM**.
 
-**Por que isso importa.** DIRETOR é o papel de um diretor de verdade: ele abre
-**todos** os módulos — financeiro, jurídico, relacionamento, operacional. A Marina
-usa **um só**: o comercial, para cadastrar o lead e marcar a reunião. Hoje ela
-carrega uma chave que abre a empresa inteira para fazer um trabalho que precisa
-de uma chave só.
+**Dois motivos, e o segundo é o que promoveu isto de "desejável" a
+"pré-requisito":**
 
-Isso é aceitável enquanto é teste, e deixa de ser no dia em que a Marina falar com
-gente de verdade: a credencial dela vai morar num arquivo de configuração, e o
-estrago possível se ela vazar deve ser do tamanho do trabalho dela, não do cargo
-que ela pegou emprestado.
+**1. Menos poder.** DIRETOR — o papel que ela usava — é o papel de um diretor de
+verdade: abre **todos** os módulos, inclusive financeiro e jurídico. A Marina usa
+**um**. Ela carregava uma chave que abre a empresa inteira para um trabalho que
+precisa de uma chave só, e essa chave mora num arquivo de configuração.
 
-**O que esse papel precisaria poder fazer, e só isso:**
+**2. É o que torna "em aberto" reconhecível.** A tarefa da reunião fica parada no
+nome da Marina até alguém pegar. Enquanto ela era DIRETOR, essa tarefa era
+**indistinguível** da tarefa de um diretor de verdade — não havia como listar "o
+que está em aberto" sem um jeito de dizer *"o responsável é o robô"*.
 
-- cadastrar lead e registrar o primeiro contato;
-- criar agendamento e consultar os horários já ocupados dos consultores;
-- listar quem pode atender.
+**O que o papel abre:** cadastrar lead, registrar o primeiro contato e criar a
+tarefa da reunião. **O que ele não abre:** financeiro, jurídico, documentos de
+cliente, criação de usuários, configuração da empresa.
 
-**O que ele não deve poder fazer:** ver financeiro, jurídico ou documentos de
-cliente; criar ou alterar usuários; mexer em configuração da empresa.
+**Duas condições que ele preserva de propósito:**
 
-**Duas condições que o papel novo tem que preservar** — as duas já valem hoje por
-acidente, e quebrá-las quebra a Marina:
+1. **Não entra no rodízio de distribuição.** Se entrasse, o juridico passaria a
+   atribuir todos os leads ao robô e nenhum consultor receberia nada.
+2. **Enxerga a matriz inteira, sem filial fixa.** É o que permite ignorar filial
+   ao calcular horário.
 
-1. **Não entrar no rodízio de distribuição.** Se o papel do robô virar um papel
-   "comercial", o juridico passa a atribuir os leads a ele — e nenhum consultor
-   recebe nada.
-2. **Enxergar a matriz inteira, sem filial fixa.** É o que permite ignorar filial
-   ao escolher consultor e horário.
-
-**Onde isso mexe:** é mudança no juridico (a lista de papéis e o mapa de papel →
-módulos), não na Marina. Do lado dela, muda só o usuário configurado.
+> **Armadilha registrada:** no juridico, um papel que as listas de escopo não
+> conheçam é **bloqueado em tudo, em silêncio** — a verificação de escopo devolve
+> "não pode" para qualquer papel desconhecido. Papel novo tem que ser
+> acrescentado lá explicitamente.
 
 ---
 
@@ -303,9 +353,56 @@ módulos), não na Marina. Do lado dela, muda só o usuário configurado.
 
 | Quando | O que vai |
 |---|---|
-| Telefone validado | O lead é criado no CRM |
+| Contato validado (telefone ou e-mail) | O lead é criado no CRM |
 | Qualificação completa | Tipo de contrato, se tem o contrato, origem real |
-| Reunião confirmada | O agendamento, com o consultor certo |
+| Reunião confirmada | Uma **tarefa de CRM em aberto**, do tipo REUNIÃO |
+
+### A reunião vira tarefa, não agendamento
+
+> **[FEITO — regra alterada em 27/08/2026]**
+
+A reunião entra no juridico como **tarefa de CRM**, e aparece no calendário de lá
+com a etiqueta **CRM**, no dia e hora certos.
+
+**Como "em aberto" é representado:** o juridico exige responsável em toda tarefa —
+não existe tarefa sem dono. Então a tarefa nasce **no nome do próprio usuário da
+Marina**, e quem for atender troca o responsável para si. A partir daí ela é dele
+e aparece no "apenas os meus" dele.
+
+**Quem é o lead vai escrito no texto da tarefa** — nome, contato e o número do
+cadastro no CRM. A tarefa do juridico não tem campo de lead, e sem isso quem
+pegasse veria "Sem vínculo" no calendário e não teria com quem falar.
+
+**Nenhum consultor é enviado.** Mandar um voltaria a atribuir a reunião a alguém,
+que é justamente o que a regra nova desfez.
+
+### Como alguém pega a tarefa
+
+**[FEITO — 27/08/2026]**
+
+- **Listar o que está esperando:** as tarefas cujo responsável ainda é o robô.
+- **Assumir:** a tarefa passa a ser de quem assumiu e some da lista de abertas.
+
+Com três regras:
+
+| Regra | Por quê |
+|---|---|
+| **Qualquer pessoa com acesso ao CRM** assume; só o **administrador da empresa** não | Regra confirmada em 28/08/2026. A reunião é de quem for atender, e o administrador administra — não atende |
+| Só é assumível o que **ainda está com o robô** | Senão "assumir" viraria um jeito de tomar a tarefa de um colega |
+| Quem chega depois recebe *"esta tarefa já é de Fulano"* | Duas pessoas clicando junto é normal; a segunda precisa saber o que houve |
+
+**Onde aparece o botão** — nos dois lugares onde a reunião é vista:
+
+- **Comercial → Tarefas**, no cartão da tarefa;
+- **Calendário**, ao abrir o compromisso.
+
+Nos dois, enquanto ninguém assumiu, o responsável aparece como **"em aberto"** em
+vez do nome do robô — que não diz nada a quem lê.
+
+> **Atenção ao módulo.** O calendário pertence ao módulo **ATENDIMENTO**, não ao
+> CRM. Um funcionário que só tenha CRM enxerga a reunião em *Comercial →
+> Tarefas*, mas **não vê o calendário** — a aba nem aparece para ele. Para ver a
+> agenda, ele precisa dos dois módulos.
 
 ### A conversa nunca espera pelo juridico
 
@@ -384,10 +481,9 @@ precisa migrar. Isso é decisão de negócio, não técnica.
 
 | Assunto | Situação |
 |---|---|
+| Reunião marcada à mão no juridico bloquear horário na Marina | **[EM ABERTO]** — hoje ela não lê a agenda de lá e pode marcar em cima |
 | Quem recebe as mensagens do WhatsApp — o juridico repassa ou a Marina recebe direto | **[EM ABERTO]** |
 | Número de WhatsApp da Marina — novo ou migrar o atual | **[EM ABERTO]** — depende de conta Meta |
-| Agendamento marcado à mão no juridico bloquear horário na Marina | **[EM ABERTO]** — hoje ela não lê a agenda de lá e pode marcar em cima |
-| Unificar os dois rodízios (juridico por ponteiro, Marina por carga) | **[EM ABERTO]** — convivem hoje |
 | Coletar CPF para casar com cadastros antigos do juridico | **[EM ABERTO]** |
 | Follow-up de quem abandonou a conversa no meio | **[EM ABERTO]** — hoje não existe |
 

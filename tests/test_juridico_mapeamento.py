@@ -6,8 +6,8 @@ from app.enums import Fonte, TipoContrato
 from app.integrations.juridico.mapeamento import (
     ORIGENS_JURIDICO,
     origem_lead,
-    payload_agendamento,
     payload_lead,
+    payload_tarefa,
     telefone_para_juridico,
     texto_qualificacao,
 )
@@ -119,25 +119,58 @@ def test_payload_lead_sem_nome_nao_manda_vazio():
     assert payload_lead({})["nomeCompleto"].strip()
 
 
-def test_payload_agendamento_omite_consultor_nao_mapeado():
-    corpo = payload_agendamento(
-        {"inicio_utc": "2026-09-02T14:00:00+00:00", "fim_utc": "2026-09-02T15:00:00+00:00"}
-    )
+# --- a reuniao vai como tarefa EM ABERTO ------------------------------------
+
+SLOT = {"data_iso": "2026-09-02", "hora": "14:00"}
+LEAD = {
+    "nome": "Pedro Guerra",
+    "telefone_e164": "+5511987654321",
+    "tipo_contrato": TipoContrato.CONSIGNADO.value,
+    "possui_contrato": True,
+}
+
+
+def test_tarefa_nasce_no_nome_do_robo():
+    # O juridico exige responsavel em toda tarefa. "Em aberto" e representado
+    # por uma tarefa parada no proprio usuario de servico, ate alguem pegar.
+    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="usuario-marina")
+    assert corpo["responsavelId"] == "usuario-marina"
+
+
+def test_tarefa_nunca_atribui_consultor():
+    # A regra mudou em 27/08/2026: ninguem e escolhido, nenhum nome e prometido.
+    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="usuario-marina")
     assert "consultorId" not in corpo
-    assert corpo["assunto"]
 
 
-def test_payload_agendamento_usa_consultor_mapeado():
-    corpo = payload_agendamento(
-        {
-            "inicio_utc": "2026-09-02T14:00:00+00:00",
-            "fim_utc": "2026-09-02T15:00:00+00:00",
-            "juridico_consultor_id": "abc-123",
-        }
+def test_tarefa_aparece_no_calendario_como_reuniao():
+    # So os tipos da lista do juridico sao aceitos; qualquer outro devolve 400.
+    assert payload_tarefa(SLOT, LEAD, responsavel_id="x")["tipo"] == "REUNIAO"
+
+
+def test_tarefa_leva_data_e_hora_locais():
+    # O juridico junta data + horario como hora local dele. Mandar o dia em UTC
+    # erraria a data nas reunioes da noite.
+    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="x")
+    assert corpo["data"] == "2026-09-02"
+    assert corpo["horario"] == "14:00"
+
+
+def test_tarefa_diz_quem_e_o_lead():
+    # A tarefa do juridico nao tem campo de lead: sem isto escrito, quem pegasse
+    # veria "Sem vinculo" no calendario e nao teria com quem falar.
+    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="x", crm_lead_id="lead-ext")
+    assert "Pedro Guerra" in corpo["assunto"]
+    assert "+5511987654321" in corpo["descricao"]
+    assert "lead-ext" in corpo["descricao"]
+    assert "consignado" in corpo["descricao"]
+
+
+def test_tarefa_usa_email_quando_nao_ha_telefone():
+    # Um contato basta, e o lead pode ter chegado so com e-mail.
+    corpo = payload_tarefa(
+        SLOT,
+        {"nome": "Ana", "email": "ana@exemplo.com"},
+        responsavel_id="x",
     )
-    assert corpo["consultorId"] == "abc-123"
-
-
-def test_payload_agendamento_nao_manda_chave_nula():
-    corpo = payload_agendamento({"inicio_utc": "2026-09-02T14:00:00+00:00"})
-    assert None not in corpo.values()
+    assert "ana@exemplo.com" in corpo["assunto"]

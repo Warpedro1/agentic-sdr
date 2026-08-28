@@ -19,7 +19,15 @@ def transporte(**rotas):
         caminho = request.url.path
         if caminho == "/api/auth/login":
             return httpx.Response(
-                200, json={"token": "t", "refreshToken": "r", "accessTokenExpiresIn": 900}
+                200,
+                json={
+                    "token": "t",
+                    "refreshToken": "r",
+                    "accessTokenExpiresIn": 900,
+                    # A tarefa da reuniao nasce no nome do proprio usuario de
+                    # servico: sem este id o entregador nao tem como cria-la.
+                    "id": "usuario-marina",
+                },
             )
         for chave, resposta in rotas.items():
             if caminho.startswith(chave):
@@ -88,8 +96,8 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
 
     def rota(request):
         chamadas.append(request.url.path)
-        if request.url.path.endswith("/agendamentos"):
-            return httpx.Response(201, json={"id": "ag-1"})
+        if request.url.path.endswith("/crm/tarefas"):
+            return httpx.Response(201, json={"id": "tarefa-1"})
         if request.url.path.endswith("/primeiro-contato"):
             return httpx.Response(200, json={"id": "lead-ext"})
         return httpx.Response(201, json={"id": "lead-ext"})
@@ -99,12 +107,15 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
     await enfileirar(
         sessao_db,
         TipoEnvio.AGENDAMENTO,
-        {**dados, "inicio_utc": "2026-09-03T14:00:00+00:00"},
+        {**dados, "data_iso": "2026-09-03", "hora": "14:00"},
         lead_id=lead.id,
     )
     await sessao_db.commit()
 
-    entregador, cliente = montar(criar_sessao_db, transporte(**{"/api/admin/leads": rota}))
+    entregador, cliente = montar(
+        criar_sessao_db,
+        transporte(**{"/api/admin/leads": rota, "/api/admin/crm/tarefas": rota}),
+    )
     resumo = await entregador.drenar()
     await cliente.fechar()
 
@@ -113,10 +124,11 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
 
     await sessao_db.refresh(lead)
     assert lead.crm_lead_id == "lead-ext"
-    # A ordem importa: criar o lead, depois qualificar, depois agendar.
+    # A ordem importa: criar o lead, depois qualificar, depois a reuniao — que
+    # vai como tarefa de CRM em aberto, nao como agendamento com dono.
     assert chamadas[0].endswith("/api/admin/leads")
     assert "primeiro-contato" in chamadas[1]
-    assert "agendamentos" in chamadas[2]
+    assert "crm/tarefas" in chamadas[2]
 
 
 @pytest.mark.asyncio
@@ -324,3 +336,44 @@ async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sess
     assert resumo["entregues"] == 1
     await sessao_db.refresh(lead)
     assert lead.crm_lead_id == "lead-ok"
+
+
+@pytest.mark.asyncio
+async def test_drenagens_simultaneas_nao_duplicam_o_lead(sessao_db, criar_sessao_db):
+    """Regressao de um defeito visto contra o juridico de verdade.
+
+    A drenagem e disparada a cada marco da conversa, entao varias rodadas correm
+    ao mesmo tempo. Sem reserva de linha, as tres liam o mesmo item pendente e as
+    tres o entregavam: UMA conversa virou TRES cadastros no CRM, criados no mesmo
+    milissegundo.
+    """
+    import asyncio
+
+    lead = await _lead(sessao_db)
+    await enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead_id=lead.id)
+    await sessao_db.commit()
+
+    criacoes = {"n": 0}
+
+    def conta(request):
+        criacoes["n"] += 1
+        return httpx.Response(201, json={"id": "lead-ext"})
+
+    drenagens = []
+    clientes = []
+    for _ in range(3):
+        entregador, cliente = montar(
+            criar_sessao_db, transporte(**{"/api/admin/leads": conta})
+        )
+        drenagens.append(entregador.drenar())
+        clientes.append(cliente)
+
+    resumos = await asyncio.gather(*drenagens)
+    for cliente in clientes:
+        await cliente.fechar()
+
+    assert criacoes["n"] == 1
+    assert sum(r["entregues"] for r in resumos) == 1
+
+    await sessao_db.refresh(lead)
+    assert lead.crm_lead_id == "lead-ext"

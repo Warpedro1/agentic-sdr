@@ -23,15 +23,15 @@ from app.outbox import Backoff
 
 AGORA = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
+# Sem o e-mail: com telefone valido a Marina nao pergunta o segundo contato.
 ROTEIRO = [
     "Pedro Guerra",
     "11 98765-4321",
-    "pedro@exemplo.com.br",
-    "5",
-    "1",
-    "2",
-    "1",
-    "1",
+    "5",  # fonte
+    "1",  # consignado
+    "2",  # nao tem o contrato
+    "1",  # primeiro horario
+    "1",  # confirma
 ]
 
 
@@ -71,12 +71,20 @@ def _juridico_vivo(request: httpx.Request) -> httpx.Response:
     caminho = request.url.path
     if caminho == "/api/auth/login":
         return httpx.Response(
-            200, json={"token": "t", "refreshToken": "r", "accessTokenExpiresIn": 900}
+            200,
+            json={
+                "token": "t",
+                "refreshToken": "r",
+                "accessTokenExpiresIn": 900,
+                # Id do proprio usuario de servico: a tarefa da reuniao nasce no
+                # nome dele, e e assim que "em aberto" e representado.
+                "id": "usuario-marina",
+            },
         )
     if caminho.endswith("/primeiro-contato"):
         return httpx.Response(200, json={"id": "lead-ext"})
-    if caminho.endswith("/agendamentos"):
-        return httpx.Response(201, json={"id": "ag-ext"})
+    if caminho.endswith("/crm/tarefas"):
+        return httpx.Response(201, json={"id": "tarefa-ext"})
     return httpx.Response(201, json={"id": "lead-ext"})
 
 
@@ -168,7 +176,7 @@ async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
     assert resumo["entregues"] == 3
     assert chamadas[0].endswith("/api/admin/leads")
     assert "primeiro-contato" in chamadas[1]
-    assert "agendamentos" in chamadas[2]
+    assert "crm/tarefas" in chamadas[2]
 
     lead = (await sessao_db.execute(select(Lead))).scalar_one()
     assert lead.crm_lead_id == "lead-ext"
@@ -196,14 +204,18 @@ async def test_com_o_juridico_no_ar_tudo_chega_durante_a_conversa(
 
 
 @pytest.mark.asyncio
-async def test_agendamento_leva_o_consultor_mapeado(sessao_db, criar_sessao_db):
-    # Sem o mapeamento, o juridico escolheria outra pessoa e o nome que a Marina
-    # prometeu ao lead nao bateria com o da agenda.
+async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
+    """A regra mudou em 27/08/2026: ninguem e escolhido.
+
+    A reuniao vira tarefa de CRM parada no nome do proprio robo, e quem tiver
+    disponibilidade assume. Atribuir um consultor aqui voltaria a prometer uma
+    pessoa que pode nao ser quem vai aparecer.
+    """
     await _semear(sessao_db)
     corpos: list[dict] = []
 
     def registrando(request):
-        if request.url.path.endswith("/agendamentos"):
+        if request.url.path.endswith("/crm/tarefas"):
             import json
 
             corpos.append(json.loads(request.read().decode()))
@@ -214,7 +226,13 @@ async def test_agendamento_leva_o_consultor_mapeado(sessao_db, criar_sessao_db):
     await cliente.fechar()
 
     assert corpos
-    assert corpos[0]["consultorId"] == "usuario-juridico-1"
+    tarefa = corpos[0]
+    assert tarefa["responsavelId"] == "usuario-marina"
+    assert "consultorId" not in tarefa
+    assert tarefa["tipo"] == "REUNIAO"
+    # Quem pegar a tarefa precisa saber com quem vai falar: a tarefa do juridico
+    # nao tem campo de lead, entao isso vai escrito.
+    assert "Pedro Guerra" in tarefa["assunto"]
 
 
 @pytest.mark.asyncio
@@ -291,12 +309,17 @@ def test_cli_ligado_usa_a_fila():
 def test_cli_ligado_sem_credencial_cai_no_noop():
     # Marcar ativo=true e esquecer login/senha nao pode virar erro no meio de um
     # atendimento: vira integracao desligada, e a Marina segue funcionando.
+    #
+    # As credenciais vazias sao passadas EXPLICITAMENTE: sem isso o teste lia o
+    # .env da maquina e passava ou falhava conforme quem estivesse rodando.
     from app.cli import montar_motor
     from app.config import Configuracao
     from app.crm import CrmSinkNoop
 
     motor, cliente = montar_motor(
-        _sessionmaker_de_mentira(), ScriptedAdapter([]), Configuracao(juridico_ativo=True)
+        _sessionmaker_de_mentira(),
+        ScriptedAdapter([]),
+        Configuracao(juridico_ativo=True, juridico_login="", juridico_senha=""),
     )
     assert cliente is None
     assert isinstance(motor._crm, CrmSinkNoop)

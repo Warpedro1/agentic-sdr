@@ -52,13 +52,17 @@ class Efeito:
 
 @dataclass(frozen=True)
 class ResolverIdentidade(Efeito):
-    """Find-or-create do lead pelo telefone + opt-out ativo + ultima conversa.
+    """Find-or-create do lead + opt-out ativo + ultima conversa.
 
     Uma operacao so, numa transacao so: o lead nasce aqui, e nao antes, porque a
-    deduplicacao e por telefone e o telefone so existe agora.
+    deduplicacao depende de um contato e o contato so existe agora.
+
+    `telefone` pode ser vazio: um contato basta, e quem nao consegue informar um
+    telefone valido e identificado pelo e-mail. Quando os dois faltam, este efeito
+    nao chega a ser emitido — a conversa vai para escalonamento antes.
     """
 
-    telefone: str
+    telefone: str | None
     nome: str | None
     email: str | None
     consentimento_em: datetime | None
@@ -67,7 +71,11 @@ class ResolverIdentidade(Efeito):
 
 @dataclass(frozen=True)
 class GerarSlots(Efeito):
-    """Calcula os horarios livres e ja resolve quem atenderia cada um."""
+    """Calcula os horarios livres, mesclando as agendas de todos os consultores.
+
+    Um horario entra na lista se ALGUEM estiver livre nele. Quem vai atender nao
+    e decidido aqui — a reuniao nasce sem dono e fica em aberto no CRM.
+    """
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,12 @@ SEQUENCIA_COLETA: tuple[tuple[str, Estado, str], ...] = (
     ("possui_contrato", Estado.AGUARDANDO_TEM_CONTRATO, "pergunta_contrato"),
 )
 
+#: Campos que a Marina segue sem, em vez de escalar, quando nao consegue entender
+#: a resposta. Sao os que NAO qualificam o lead: saber de onde a pessoa veio e
+#: util para marketing, mas nao muda nada do que o consultor precisa preparar.
+#: Tipo de contrato e "tem o contrato em maos" ficam de fora de proposito.
+CAMPOS_DISPENSAVEIS: frozenset[str] = frozenset({"fonte"})
+
 #: Estados cujo sentido depende da lista de horarios que estava no ctx. Como essa
 #: lista e transitoria, retomar uma conversa parada num deles exige recalcular.
 ESTADOS_QUE_DEPENDEM_DE_SLOTS: frozenset[Estado] = frozenset(
@@ -179,6 +193,24 @@ def _lista_slots(ctx: dict) -> str:
     )
 
 
+def _telefone_de(lead: dict, ctx: dict) -> str:
+    return lead.get("telefone_e164") or ctx.get("telefone") or ""
+
+
+def _email_de(lead: dict, ctx: dict) -> str:
+    return lead.get("email") or ctx.get("email") or ""
+
+
+def _contato_de(lead: dict, ctx: dict) -> str:
+    """Por onde o time consegue retornar.
+
+    Telefone quando ha, e-mail quando nao ha. Desde que um contato basta para
+    cadastrar, prometer retorno "no telefone" para quem so deu e-mail seria
+    prometer o que ninguem vai cumprir.
+    """
+    return _telefone_de(lead, ctx) or _email_de(lead, ctx)
+
+
 def _valores_do_template(chave: str, lead: dict, ctx: dict) -> dict[str, Any]:
     """Cada template so recebe o que ele declara. Faltar variavel e erro, nao vazio."""
     politicas = _politicas(ctx)
@@ -191,22 +223,23 @@ def _valores_do_template(chave: str, lead: dict, ctx: dict) -> dict[str, Any]:
         "oferta_horarios": lambda: {"lista_slots": _lista_slots(ctx)},
         "sem_horarios": lambda: {
             "dias": politicas.horizonte_dias,
-            "telefone": lead.get("telefone_e164") or ctx.get("telefone") or "",
+            "contato": _contato_de(lead, ctx),
         },
-        "escalonamento": lambda: {
-            "telefone": lead.get("telefone_e164") or ctx.get("telefone") or ""
-        },
+        "escalonamento": lambda: {"contato": _contato_de(lead, ctx)},
         "confirmacao": lambda: {
             "data_extenso": escolhido.get("data_extenso", ""),
             "hora": escolhido.get("hora", ""),
-            "consultor": escolhido.get("consultor_nome", ""),
         },
         "agendado": lambda: {
             "nome": _nome_de(lead, ctx),
             "data_extenso": escolhido.get("data_extenso", ""),
             "hora": escolhido.get("hora", ""),
-            "consultor": escolhido.get("consultor_nome", ""),
-            "email": lead.get("email") or ctx.get("email") or "",
+            "email": _email_de(lead, ctx),
+        },
+        "agendado_sem_email": lambda: {
+            "nome": _nome_de(lead, ctx),
+            "data_extenso": escolhido.get("data_extenso", ""),
+            "hora": escolhido.get("hora", ""),
         },
     }.get(chave, dict)()
 
@@ -216,23 +249,33 @@ def _msg(catalogo: CatalogoMensagens, chave: str, lead: dict, ctx: dict) -> Mens
 
 
 def _chave_escalonamento(lead: dict, ctx: dict) -> str:
-    """Escalar sem telefone precisa de outra copy.
+    """Escalar sem contato nenhum precisa de outra copy.
 
-    O caso mais comum de escalonamento e tres tentativas de telefone invalido —
-    exatamente quando nao ha telefone. A mensagem padrao terminaria em "alguem te
-    chama no ." e prometeria um retorno que o time nao tem como fazer.
+    A mensagem padrao terminaria em "alguem te chama no ." e prometeria um retorno
+    que o time nao tem como fazer.
     """
-    tem_contato = bool(
-        lead.get("telefone_e164") or ctx.get("telefone") or lead.get("email")
-    )
-    return "escalonamento" if tem_contato else "escalonamento_sem_contato"
+    return "escalonamento" if _contato_de(lead, ctx) else "escalonamento_sem_contato"
 
 
 def _repetir_pergunta(
     catalogo: CatalogoMensagens, estado: Estado, lead: dict, ctx: dict
 ) -> MensagemSaida:
     chave = PERGUNTA_DO_ESTADO.get(estado, "pergunta_nome")
+    # O e-mail tem duas perguntas: a normal e a que substitui o telefone. Repetir
+    # a normal para quem chegou aqui pelo telefone soaria como se a Marina tivesse
+    # esquecido as tentativas anteriores.
+    if estado is Estado.AGUARDANDO_EMAIL and "telefone" in _dispensados(ctx):
+        chave = "pergunta_email_sem_telefone"
     return _msg(catalogo, chave, lead, ctx)
+
+
+def _dispensados(ctx: dict) -> set[str]:
+    """Campos que a Marina desistiu de perguntar nesta conversa."""
+    return set(ctx.get("campos_dispensados") or ())
+
+
+def _dispensar(ctx: dict, campo: str) -> list[str]:
+    return sorted(_dispensados(ctx) | {campo})
 
 
 def _falha_de_parsing(
@@ -268,13 +311,25 @@ def _falha_de_parsing(
 def _avancar_coleta(
     catalogo: CatalogoMensagens, lead: dict, ctx: dict, atualizacoes: dict
 ) -> Transicao:
-    """Vai para o proximo campo que a Marina ainda nao sabe.
+    """Vai para o proximo campo que a Marina ainda precisa perguntar.
 
-    Quando todos ja estao preenchidos — caso de um lead reconhecido — cai direto
-    no carregamento de horarios, sem repetir pergunta nenhuma.
+    Tres motivos para pular um campo:
+
+    1. Ja se sabe a resposta (lead reconhecido).
+    2. Ja se desistiu dele nesta conversa (`campos_dispensados`).
+    3. E o e-mail e ja ha telefone — um contato basta.
+
+    Quando nao sobra nada, cai direto no carregamento de horarios.
     """
     conhecido = {**lead, **atualizacoes}
+    dispensados = _dispensados(ctx)
+    tem_telefone = bool(conhecido.get("telefone_e164") or ctx.get("telefone"))
+
     for campo, estado, chave in SEQUENCIA_COLETA:
+        if campo in dispensados:
+            continue
+        if campo == "email" and tem_telefone:
+            continue
         if conhecido.get(campo) is None:
             return Transicao(
                 novo_estado=estado,
@@ -383,9 +438,11 @@ def _carregar_horarios(catalogo: CatalogoMensagens, lead: dict, ctx: dict) -> Tr
 def _reservando(catalogo: CatalogoMensagens, lead: dict, ctx: dict) -> Transicao:
     reserva = ctx.get("reserva") or {}
     if reserva.get("ok"):
+        # Sem e-mail nao da para prometer o envio da confirmacao.
+        chave = "agendado" if _email_de(lead, ctx) else "agendado_sem_email"
         return Transicao(
             novo_estado=Estado.AGENDADO,
-            mensagens=[_msg(catalogo, "agendado", lead, ctx)],
+            mensagens=[_msg(catalogo, chave, lead, ctx)],
             efeitos=[EncerrarConversa()],
         )
 
@@ -494,7 +551,19 @@ def _por_estado(
             politicas = _politicas(ctx)
             tentativas = int(ctx.get("tentativas", 0)) + 1
             if tentativas >= politicas.max_tentativas:
-                return _falha_de_parsing(catalogo, estado, lead, ctx)
+                # Um contato basta. Em vez de entregar a conversa para um humano
+                # so porque o numero nao sai, a Marina tenta o e-mail — que e o
+                # outro caminho aceito para cadastrar o lead.
+                return Transicao(
+                    novo_estado=Estado.AGUARDANDO_EMAIL,
+                    ctx_updates={
+                        "tentativas": 0,
+                        "campos_dispensados": _dispensar(ctx, "telefone"),
+                    },
+                    mensagens=[
+                        _msg(catalogo, "pergunta_email_sem_telefone", lead, ctx)
+                    ],
+                )
             return Transicao(
                 novo_estado=estado,
                 ctx_updates={"tentativas": tentativas},
@@ -541,7 +610,11 @@ def _por_estado(
         reconhecido = (ctx.get("reconhecimento") or {}).get("lead_conhecido") or lead
         if resposta:
             anterior = (ctx.get("reconhecimento") or {}).get("ultimo_estado")
-            destino = Estado(anterior) if anterior else Estado.AGUARDANDO_EMAIL
+            if not anterior:
+                # Sem estado anterior conhecido, retoma pela coleta — que ja sabe
+                # pular o que o lead ja informou e o que um contato torna dispensavel.
+                return _avancar_coleta(catalogo, reconhecido, ctx, {})
+            destino = Estado(anterior)
             if destino in ESTADOS_QUE_DEPENDEM_DE_SLOTS:
                 # Retomar direto na escolha de horario deixaria o lead preso: a
                 # lista ofertada era transitoria e nao existe mais. Recalcula.
@@ -555,23 +628,86 @@ def _por_estado(
                 ctx_updates={"tentativas": 0},
                 mensagens=[_repetir_pergunta(catalogo, destino, reconhecido, ctx)],
             )
-        # "Comecar do zero" nao apaga o cadastro: refaz a coleta do inicio.
+        # "Comecar do zero" refaz a QUALIFICACAO, nao o cadastro. Nome e contato
+        # ficam: quem pediu para recomecar quer rever o caso, nao digitar o
+        # telefone de novo. Limpar os campos e o que faz a Marina perguntar de
+        # novo em vez de pular tudo por ja saber as respostas antigas.
+        zerados = {"fonte": None, "tipo_contrato": None, "possui_contrato": None}
+        avanco = _avancar_coleta(
+            catalogo,
+            {**reconhecido, **zerados},
+            {**ctx, "campos_dispensados": []},
+            zerados,
+        )
         return Transicao(
-            novo_estado=Estado.AGUARDANDO_EMAIL,
-            ctx_updates={"tentativas": 0},
-            mensagens=[_msg(catalogo, "pergunta_email", reconhecido, ctx)],
+            novo_estado=avanco.novo_estado,
+            lead_updates=avanco.lead_updates,
+            # Recomecar tambem desfaz o que a Marina desistiu de perguntar antes.
+            ctx_updates={**avanco.ctx_updates, "campos_dispensados": []},
+            mensagens=avanco.mensagens,
+            efeitos=avanco.efeitos,
         )
 
     if estado is Estado.AGUARDANDO_EMAIL:
         email = parse_email(texto)
         if email is None:
+            # Aqui o escalonamento continua valendo: se o telefone ja foi
+            # dispensado, sem e-mail nao sobra contato nenhum para retornar.
             return _falha_de_parsing(catalogo, estado, lead, ctx)
-        return _avancar_coleta(catalogo, lead, {**ctx, "email": email}, {"email": email})
+        contexto = {**ctx, "email": email}
+        if "telefone" in _dispensados(ctx) and not lead.get("id"):
+            # Sem telefone, e o e-mail que identifica o lead — entao e agora que
+            # ele nasce, e nao la atras.
+            return Transicao(
+                novo_estado=Estado.RESOLVENDO_IDENTIDADE,
+                ctx_updates={"email": email, "tentativas": 0},
+                efeitos=[
+                    ResolverIdentidade(
+                        telefone=None,
+                        nome=ctx.get("nome"),
+                        email=email,
+                        consentimento_em=ctx.get("consentimento_em"),
+                        canal=ctx.get("canal", "terminal"),
+                    )
+                ],
+            )
+        return _avancar_coleta(catalogo, lead, contexto, {"email": email})
 
     if estado is Estado.AGUARDANDO_FONTE:
         resultado = parse_fonte(texto)
         if resultado is None:
-            return _falha_de_parsing(catalogo, estado, lead, ctx)
+            politicas = _politicas(ctx)
+            tentativas = int(ctx.get("tentativas", 0)) + 1
+            if tentativas >= politicas.max_tentativas:
+                # A fonte nao qualifica ninguem: e melhor cadastrar sem ela do que
+                # travar o atendimento inteiro por causa de um dado de marketing.
+                dispensados = _dispensar(ctx, "fonte")
+                avanco = _avancar_coleta(
+                    catalogo, lead, {**ctx, "campos_dispensados": dispensados}, {}
+                )
+                return Transicao(
+                    novo_estado=avanco.novo_estado,
+                    lead_updates=avanco.lead_updates,
+                    ctx_updates={
+                        **avanco.ctx_updates,
+                        "campos_dispensados": dispensados,
+                    },
+                    mensagens=[
+                        _msg(catalogo, "fonte_dispensada", lead, ctx),
+                        *avanco.mensagens,
+                    ],
+                    efeitos=avanco.efeitos,
+                )
+            return Transicao(
+                novo_estado=estado,
+                ctx_updates={"tentativas": tentativas},
+                mensagens=[
+                    catalogo.render(
+                        "nao_entendi",
+                        repeticao=_msg(catalogo, "pergunta_fonte", lead, ctx).conteudo,
+                    )
+                ],
+            )
         fonte, original = resultado
         return _avancar_coleta(
             catalogo, lead, ctx, {"fonte": fonte.value, "fonte_raw": original}

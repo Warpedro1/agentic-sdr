@@ -15,11 +15,6 @@
 
 << 11 98765-4321
 
->> [pergunta_email]
-   Perfeito. E qual o seu e-mail? É por ele que envio o convite da reunião.
-
-<< pedro@exemplo.com.br
-
 >> [pergunta_fonte]
    Como você chegou até a Leve? Responda com o número:
    1 - Anúncio      2 - WhatsApp     3 - E-mail
@@ -57,11 +52,11 @@
 << 1
 
 >> [confirmacao]
-   Confirmando: quarta-feira, 2 de setembro, às 11:30, com Ana Ribeiro. Está certo?
+   Confirmando: quarta-feira, 2 de setembro, às 11:30. Está certo?
    1 - Sim  2 - Escolher outro
 
 << 1
 
->> [agendado]
-   Prontinho, Pedro! Sua conversa está agendada para quarta-feira, 2 de setembro às 11:30 com Ana Ribeiro.
-   Enviei a confirmação para pedro@exemplo.com.br. Se precisar remarcar, é só me chamar.
+>> [agendado_sem_email]
+   Prontinho, Pedro! Sua conversa está agendada para quarta-feira, 2 de setembro às 11:30, com um
+   dos nossos consultores. Se precisar remarcar, é só me chamar.

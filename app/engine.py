@@ -31,12 +31,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.availability import gerar_candidatos, montar_ofertas
-from app.booking import reservar
+from app.booking import ResultadoReserva, reservar
 from app.calendar import PostgresCalendarProvider
 from app.channels.base import ChannelAdapter, InboundMessage, MensagemSaida
 from app.config import Configuracao, obter_configuracao
 from app.crm import CrmSink, CrmSinkNoop
-from app.datas import data_extenso, hora
+from app.datas import data_extenso, data_iso, hora
 from app.enums import ESTADOS_INTERNOS, ESTADOS_TERMINAIS, Direcao, Estado
 from app.logging import obter_logger
 from app.machine import (
@@ -52,7 +52,7 @@ from app.machine import (
     Transicao,
     handle,
 )
-from app.models import Consultor, Conversa, Documento, Lead, Mensagem, OptOut
+from app.models import Conversa, Documento, Lead, Mensagem, OptOut
 from app.routing import carga_futura
 from app.storage.local import ArmazenamentoDocumento
 from app.templates import CatalogoMensagens, obter_catalogo
@@ -167,7 +167,23 @@ class Engine:
         # Mesmo numa conversa abandonada no meio, o que ja foi enfileirado
         # precisa ter a chance de chegar ao CRM antes do processo terminar.
         await self._aguardar_entregas()
+        await self._drenagem_final()
         return execucao.conversa_id
+
+    async def _drenagem_final(self) -> None:
+        """Uma ultima rodada, depois que todas as outras terminaram.
+
+        As rodadas disparadas durante a conversa correm em paralelo, e as que
+        comecam antes do lead existir no CRM adiam o que depende dele. Sem esta
+        rodada final, a qualificacao e a reuniao ficariam na fila esperando a
+        proxima conversa — que pode nunca vir.
+        """
+        if self._entregador is None:
+            return
+        try:
+            await self._entregador.drenar()
+        except Exception as erro:  # noqa: BLE001 - a conversa ja terminou bem
+            logger.warning("crm_drenagem_final_falhou", erro=str(erro))
 
     async def _abrir(self) -> Execucao:
         async with self._criar_sessao() as sessao:
@@ -320,10 +336,17 @@ class Engine:
         self, execucao: Execucao, efeito: ResolverIdentidade
     ) -> None:
         async with self._criar_sessao() as sessao:
+            # Reconhecimento pelo contato que existir: telefone quando ha, e-mail
+            # quando o telefone nao saiu. Sem nenhum dos dois este efeito nem
+            # chega a ser emitido — a maquina escala antes.
+            if efeito.telefone:
+                criterio = Lead.telefone_e164 == efeito.telefone
+            else:
+                # Entre os SEM telefone: la o e-mail e a identidade. Um lead que
+                # ja tem telefone e outra pessoa, ainda que compartilhe o e-mail.
+                criterio = (Lead.email == efeito.email) & Lead.telefone_e164.is_(None)
             existente = (
-                await sessao.execute(
-                    select(Lead).where(Lead.telefone_e164 == efeito.telefone)
-                )
+                await sessao.execute(select(Lead).where(criterio))
             ).scalar_one_or_none()
 
             conhecido: dict | None = None
@@ -367,13 +390,15 @@ class Engine:
                     ultima_em = anterior.ultimo_contato_em
                     ultimo_estado = anterior.estado
 
+            criterio_opt_out = (
+                OptOut.telefone_e164 == efeito.telefone
+                if efeito.telefone
+                else OptOut.email == efeito.email
+            )
             opt_out = (
                 await sessao.execute(
                     select(OptOut)
-                    .where(
-                        OptOut.telefone_e164 == efeito.telefone,
-                        OptOut.revogado_em.is_(None),
-                    )
+                    .where(criterio_opt_out, OptOut.revogado_em.is_(None))
                     .order_by(desc(OptOut.criado_em))
                     .limit(1)
                 )
@@ -437,33 +462,56 @@ class Engine:
                 "indice": indice,
                 "inicio_utc": oferta.inicio_utc.isoformat(),
                 "fim_utc": oferta.fim_utc.isoformat(),
-                "consultor_id": str(oferta.consultor_id),
-                "consultor_nome": oferta.consultor_nome,
+                # Quem pode atender, em ordem de carga. Nao e atribuicao: a reuniao
+                # vai para o CRM em aberto. Serve de capacidade e de alternativa
+                # para a reserva. O lead nunca ve estes nomes.
+                "consultores": [str(c.consultor_id) for c in oferta.consultores],
                 "data_extenso": data_extenso(oferta.inicio_utc, fuso),
                 "hora": hora(oferta.inicio_utc, fuso),
+                # Data e hora ja no fuso de exibicao, para o CRM externo receber
+                # o dia certo sem ter que reconverter.
+                "data_iso": data_iso(oferta.inicio_utc, fuso),
             }
             for indice, oferta in enumerate(ofertas, start=1)
         ]
 
     async def _reservar(self, execucao: Execucao) -> None:
+        """Consome uma vaga do horario escolhido.
+
+        A reuniao nao tem dono: o consultor reservado aqui e uma FICHA DE
+        CAPACIDADE, nao uma atribuicao — o que vai para o CRM e uma tarefa em
+        aberto. Por isso a reserva percorre todos os livres daquele horario: o
+        lead so perde a vaga quando todos acabam, e nao quando o primeiro da lista
+        e tomado no meio do caminho.
+        """
         slot = execucao.ctx.get("slot_escolhido") or {}
-        async with self._criar_sessao() as sessao:
-            resultado = await reservar(
-                sessao,
-                lead_id=uuid.UUID(str(execucao.lead_id)),
-                consultor_id=uuid.UUID(slot["consultor_id"]),
-                inicio_utc=datetime.fromisoformat(slot["inicio_utc"]),
-                fim_utc=datetime.fromisoformat(slot["fim_utc"]),
-            )
+        inicio = datetime.fromisoformat(slot["inicio_utc"])
+        fim = datetime.fromisoformat(slot["fim_utc"])
+        candidatos = slot.get("consultores") or []
+
+        resultado = None
+        for consultor_id in candidatos:
+            async with self._criar_sessao() as sessao:
+                resultado = await reservar(
+                    sessao,
+                    lead_id=uuid.UUID(str(execucao.lead_id)),
+                    consultor_id=uuid.UUID(str(consultor_id)),
+                    inicio_utc=inicio,
+                    fim_utc=fim,
+                )
+            if resultado.ok:
+                break
+
+        if resultado is None:
+            resultado = ResultadoReserva(ok=False, motivo="sem consultor no horario")
+
         execucao.ctx["reserva"] = {"ok": resultado.ok, "motivo": resultado.motivo}
         if resultado.ok:
-            crm_consultor = await self._crm_usuario_do_consultor(slot.get("consultor_id"))
             await self._crm.registrar_agendamento(
                 {
                     **slot,
                     "agendamento_id": str(resultado.agendamento_id),
                     "lead_id": str(execucao.lead_id),
-                    "juridico_consultor_id": crm_consultor,
                 }
             )
             self._agendar_entrega()
@@ -472,14 +520,8 @@ class Engine:
             conversa_id=str(execucao.conversa_id),
             ok=resultado.ok,
             motivo=resultado.motivo,
+            tentados=len(candidatos),
         )
-
-    async def _crm_usuario_do_consultor(self, consultor_id: str | None) -> str | None:
-        if not consultor_id:
-            return None
-        async with self._criar_sessao() as sessao:
-            consultor = await sessao.get(Consultor, uuid.UUID(str(consultor_id)))
-            return consultor.crm_usuario_id if consultor else None
 
     async def _salvar_documento(
         self, execucao: Execucao, efeito: SalvarDocumento
@@ -518,14 +560,16 @@ class Engine:
 
     async def _revogar_opt_out(self, execucao: Execucao) -> None:
         telefone = execucao.lead.get("telefone_e164") or execucao.ctx.get("telefone")
-        if not telefone:
+        email = execucao.lead.get("email") or execucao.ctx.get("email")
+        if not telefone and not email:
             return
+        criterio = (
+            OptOut.telefone_e164 == telefone if telefone else OptOut.email == email
+        )
         async with self._criar_sessao() as sessao:
             ativos = (
                 await sessao.execute(
-                    select(OptOut).where(
-                        OptOut.telefone_e164 == telefone, OptOut.revogado_em.is_(None)
-                    )
+                    select(OptOut).where(criterio, OptOut.revogado_em.is_(None))
                 )
             ).scalars()
             for registro in ativos:

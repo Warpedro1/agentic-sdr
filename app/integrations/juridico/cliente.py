@@ -33,10 +33,22 @@ class ErroJuridico(Exception):
         super().__init__(mensagem)
         self.status = status
 
+    #: Falhas que MELHORAM sozinhas ou com uma correção de configuração, e por
+    #: isso merecem nova tentativa. 401/403 estão aqui de propósito: para um
+    #: usuário de serviço, "credenciais inválidas" é problema de configuração —
+    #: alguém troca a senha no .env e o que estava na fila precisa fluir. Tratar
+    #: como permanente matava o lead: uma única recusa queimava as cinco
+    #: tentativas e o item ficava morto, sem nem o flush manual recuperar.
+    STATUS_RECUPERAVEIS = frozenset({401, 403, 429})
+
     @property
     def temporario(self) -> bool:
-        """Vale tentar de novo? 5xx e falha de rede sim; 4xx não."""
-        return self.status is None or self.status >= 500 or self.status == 429
+        """Vale tentar de novo? Rede, 5xx, e as recusas que uma correção resolve."""
+        return (
+            self.status is None
+            or self.status >= 500
+            or self.status in self.STATUS_RECUPERAVEIS
+        )
 
 
 class LeadDuplicado(ErroJuridico):
@@ -53,6 +65,10 @@ class Sessao:
     token: str
     refresh_token: str
     expira_em: datetime
+    #: Id do proprio usuario de serviço no juridico. A tarefa da reunião nasce
+    #: no nome dele — é assim que "em aberto" é representado, já que o juridico
+    #: exige responsável em toda tarefa.
+    usuario_id: str | None = None
 
     def valido(self, agora: datetime) -> bool:
         return agora + FOLGA_RENOVACAO < self.expira_em
@@ -111,11 +127,21 @@ class ClienteJuridico:
         # `accessTokenExpiresIn` vem em segundos. Se faltar, assume o padrao do
         # juridico (15 min) em vez de tratar o token como eterno.
         segundos = int(corpo.get("accessTokenExpiresIn") or 900)
+        usuario_id = corpo.get("id")
         return Sessao(
             token=token,
             refresh_token=str(corpo.get("refreshToken") or ""),
             expira_em=self._relogio() + timedelta(seconds=segundos),
+            # O refresh nao repete o id; preserva o que o login trouxe.
+            usuario_id=str(usuario_id)
+            if usuario_id
+            else (self._sessao.usuario_id if self._sessao else None),
         )
+
+    async def usuario_id(self) -> str | None:
+        """Id do usuário de serviço, garantindo que há sessão."""
+        await self._token()
+        return self._sessao.usuario_id if self._sessao else None
 
     async def _token(self) -> str:
         agora = self._relogio()
@@ -225,12 +251,18 @@ class ClienteJuridico:
                 resposta.status_code,
             )
 
-    async def criar_agendamento(self, lead_id: str, payload: dict) -> str:
+    async def criar_tarefa(self, payload: dict) -> str:
+        """Cria a reunião como tarefa de CRM, em aberto.
+
+        Não é agendamento com dono: a tarefa nasce no nome do próprio usuário de
+        serviço e fica esperando quem tiver disponibilidade pegar. Ela aparece no
+        calendário do juridico com a etiqueta CRM, como qualquer outra.
+        """
         resposta = await self._requisitar(
-            "POST", f"/api/admin/leads/{lead_id}/agendamentos", json=payload
+            "POST", "/api/admin/crm/tarefas", json=payload
         )
         if resposta.status_code not in (200, 201):
             raise ErroJuridico(
-                f"agendamento recusado: {self._detalhe(resposta)}", resposta.status_code
+                f"tarefa recusada: {self._detalhe(resposta)}", resposta.status_code
             )
         return str(resposta.json()["id"])

@@ -21,6 +21,10 @@ from app.integrations.juridico.cliente import (
 AGORA = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
 
+#: Id do proprio usuario de servico, como o juridico devolve no login.
+USUARIO_ID = "usuario-marina"
+
+
 class JuridicoFalso:
     """Servidor de mentira que conta quantas vezes cada rota foi chamada."""
 
@@ -45,6 +49,7 @@ class JuridicoFalso:
                     "token": f"token-{self.logins}",
                     "refreshToken": f"refresh-{self.logins}",
                     "accessTokenExpiresIn": 900,
+                    "id": USUARIO_ID,
                 },
             )
 
@@ -155,7 +160,20 @@ async def test_login_bloqueado_vira_erro_temporario():
 
 
 @pytest.mark.asyncio
-async def test_credencial_errada_nao_e_temporario():
+async def test_credencial_errada_e_temporaria():
+    """Esta regra foi INVERTIDA em 28/08/2026, e vale registrar os dois lados.
+
+    Antes: 401 era permanente, com o argumento de que insistir com senha errada
+    gasta o limite de login do juridico (10 por 15 min, com bloqueio progressivo).
+
+    O que aconteceu na prática: uma única recusa queimava as cinco tentativas de
+    uma vez e o lead ficava MORTO na fila — nem corrigir a senha e rodar o flush
+    trazia de volta. Perder o lead é pior do que o risco do rate limit.
+
+    E o risco é menor do que parecia: o cliente guarda a sessão, então uma
+    rodada de entrega inteira faz **um** login; e o backoff espaça as rodadas até
+    30 minutos. Isso fica muito abaixo do limite do juridico.
+    """
     falso = JuridicoFalso(
         login=lambda n: httpx.Response(401, json={"message": "Credenciais inválidas"})
     )
@@ -163,8 +181,7 @@ async def test_credencial_errada_nao_e_temporario():
 
     with pytest.raises(ErroJuridico) as capturado:
         await cliente.listar_consultores()
-    # Insistir com senha errada gasta o rate limit e bloqueia a conta.
-    assert capturado.value.temporario is False
+    assert capturado.value.temporario is True
     await cliente.fechar()
 
 
@@ -261,16 +278,27 @@ async def test_busca_sem_resultado_devolve_nada():
 
 
 @pytest.mark.asyncio
-async def test_primeiro_contato_e_agendamento():
+async def test_primeiro_contato_e_tarefa_em_aberto():
+    # A reuniao vai como TAREFA de CRM, nao como agendamento com dono.
     falso = JuridicoFalso(
         **{
             "/api/admin/leads/lead-1/primeiro-contato": httpx.Response(200, json={"id": "lead-1"}),
-            "/api/admin/leads/lead-1/agendamentos": httpx.Response(201, json={"id": "ag-1"}),
+            "/api/admin/crm/tarefas": httpx.Response(201, json={"id": "tarefa-1"}),
         }
     )
     cliente = montar(falso)
     await cliente.registrar_primeiro_contato("lead-1", "qualificação", canal="WHATSAPP")
-    assert await cliente.criar_agendamento("lead-1", {"assunto": "x"}) == "ag-1"
+    assert await cliente.criar_tarefa({"assunto": "x"}) == "tarefa-1"
+    await cliente.fechar()
+
+
+@pytest.mark.asyncio
+async def test_login_guarda_o_proprio_usuario():
+    # Sem saber o proprio id, a Marina nao consegue criar a tarefa: o juridico
+    # exige responsavel, e "em aberto" e justamente a tarefa parada no nome dela.
+    falso = JuridicoFalso()
+    cliente = montar(falso)
+    assert await cliente.usuario_id() == USUARIO_ID
     await cliente.fechar()
 
 
@@ -295,3 +323,21 @@ async def test_erro_500_e_temporario():
         await cliente.criar_lead({"nomeCompleto": "Pedro"})
     assert capturado.value.temporario is True
     await cliente.fechar()
+
+
+def test_credencial_recusada_e_recuperavel():
+    """Regressao de um caso real: o lead do Pedro ficou morto na fila.
+
+    Um unico 401 marcava o item como falha PERMANENTE, o que queimava as cinco
+    tentativas de uma vez. O lead nunca chegava ao CRM e nem o flush manual
+    trazia de volta — mesmo depois de a credencial ser corrigida.
+    """
+    assert ErroJuridico("login recusado", 401).temporario
+    assert ErroJuridico("sem permissao", 403).temporario
+    assert ErroJuridico("bloqueado", 429).temporario
+    assert ErroJuridico("indisponivel", 503).temporario
+    assert ErroJuridico("conexao caiu", None).temporario
+    # Um payload que o juridico recusa nao melhora com repeticao: continua
+    # queimando as tentativas para virar algo que uma pessoa olha.
+    assert not ErroJuridico("origem invalida", 400).temporario
+    assert not ErroJuridico("nao encontrado", 404).temporario

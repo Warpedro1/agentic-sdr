@@ -61,9 +61,25 @@ def montar_engine(criar_sessao, entradas, armazenamento=None, agora=AGORA):
     return motor, adaptador
 
 
+# Um contato basta: com telefone valido a Marina NAO pergunta o e-mail. Por isso
+# o caminho feliz tem uma resposta a menos do que tinha antes de 27/08/2026.
 CAMINHO_FELIZ = [
     txt("Pedro Guerra"),
     txt("11 98765-4321"),
+    txt("5"),  # fonte: indicacao
+    txt("1"),  # tipo de contrato: consignado
+    txt("2"),  # nao tem o contrato em maos
+    txt("1"),  # primeiro horario
+    txt("1"),  # confirma
+]
+
+#: Tres telefones invalidos: a Marina desiste do numero e pede o e-mail, em vez
+#: de entregar a conversa a um humano.
+CAMINHO_SO_EMAIL = [
+    txt("Pedro Guerra"),
+    txt("abc"),
+    txt("abc"),
+    txt("abc"),
     txt("pedro@exemplo.com.br"),
     txt("5"),
     txt("1"),
@@ -90,7 +106,8 @@ async def test_caminho_feliz_agenda_e_grava_tudo(sessao_db, criar_sessao_db):
         )
     ).scalar_one()
     assert lead.nome == "Pedro Guerra"
-    assert lead.email == "pedro@exemplo.com.br"
+    # Nao foi perguntado: o telefone ja bastava como contato.
+    assert lead.email is None
     assert lead.fonte == "indicacao"
     assert lead.tipo_contrato == "consignado"
     assert lead.possui_contrato is False
@@ -101,7 +118,61 @@ async def test_caminho_feliz_agenda_e_grava_tudo(sessao_db, criar_sessao_db):
     assert agendamento.lead_id == lead.id
     assert agendamento.status == "agendado"
 
+    # Sem e-mail nao da para prometer o envio da confirmacao.
+    assert adaptador.enviadas[-1].template_key == "agendado_sem_email"
+
+
+@pytest.mark.asyncio
+async def test_lead_nasce_so_com_email_quando_o_telefone_nao_sai(
+    sessao_db, criar_sessao_db
+):
+    """Um contato basta — e este e o caminho que antes virava escalonamento."""
+    await semear_consultores(sessao_db)
+    motor, adaptador = montar_engine(criar_sessao_db, CAMINHO_SO_EMAIL)
+
+    conversa_id = await motor.rodar()
+
+    conversa = await sessao_db.get(Conversa, conversa_id)
+    assert conversa.estado == Estado.AGENDADO.value
+
+    lead = (await sessao_db.execute(select(Lead))).scalar_one()
+    assert lead.telefone_e164 is None
+    assert lead.email == "pedro@exemplo.com.br"
+    assert lead.nome == "Pedro Guerra"
+
+    assert (await sessao_db.execute(select(Agendamento))).scalar_one() is not None
+    # Com e-mail, a confirmacao volta a ser prometida.
     assert adaptador.enviadas[-1].template_key == "agendado"
+
+
+@pytest.mark.asyncio
+async def test_fonte_incompreensivel_nao_trava_o_atendimento(
+    sessao_db, criar_sessao_db
+):
+    await semear_consultores(sessao_db)
+    motor, adaptador = montar_engine(
+        criar_sessao_db,
+        [
+            txt("Pedro Guerra"),
+            txt("11 98765-4321"),
+            # Nada que o parser reconheca. "nao sei" e "nao lembro" nao servem
+            # aqui: elas ja caem em OUTRO, que e a saida elegante.
+            txt("hmmm"),
+            txt("xyz"),
+            txt("qqq"),
+            txt("1"),  # tipo de contrato
+            txt("2"),  # nao tem o contrato
+            txt("1"),
+            txt("1"),
+        ],
+    )
+    await motor.rodar()
+
+    lead = (await sessao_db.execute(select(Lead))).scalar_one()
+    assert lead.fonte is None
+    assert lead.tipo_contrato == "consignado"
+    assert (await sessao_db.execute(select(Agendamento))).scalar_one() is not None
+    assert "fonte_dispensada" in [m.template_key for m in adaptador.enviadas]
 
 
 @pytest.mark.asyncio
@@ -146,7 +217,7 @@ async def test_transcricao_registra_entrada_e_saida(sessao_db, criar_sessao_db):
     assert saidas
     assert all(m.template_key for m in saidas)
     assert "boas_vindas" in [m.template_key for m in saidas]
-    assert "agendado" in [m.template_key for m in saidas]
+    assert "agendado_sem_email" in [m.template_key for m in saidas]
 
 
 @pytest.mark.asyncio
@@ -170,13 +241,15 @@ async def test_voltar_funciona_ponta_a_ponta(sessao_db, criar_sessao_db):
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("voltar"),
         ],
     )
     await motor.rodar()
-    # O engine e quem mantem estado_anterior; a maquina so consulta.
-    assert adaptador.enviadas[-1].template_key == "pergunta_email"
+    # O engine e quem mantem estado_anterior; a maquina so consulta. Estados
+    # internos nao entram na conta: entre o telefone e a fonte passam
+    # RESOLVENDO_IDENTIDADE e a propria coleta, entao o ultimo passo "visivel"
+    # antes da fonte foi a pergunta do nome.
+    assert adaptador.enviadas[-1].template_key == "pergunta_nome"
 
 
 @pytest.mark.asyncio
@@ -283,7 +356,6 @@ async def test_documento_e_arquivado_e_registrado(
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("5"),
             txt("1"),
             txt("1"),  # tenho o contrato
@@ -320,7 +392,6 @@ async def test_sem_consultor_nenhum_escala_para_humano(sessao_db, criar_sessao_d
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("5"),
             txt("1"),
             txt("2"),
@@ -341,7 +412,6 @@ async def test_horario_ofertado_respeita_antecedencia(sessao_db, criar_sessao_db
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("5"),
             txt("1"),
             txt("2"),
@@ -358,14 +428,15 @@ async def test_horario_ofertado_respeita_antecedencia(sessao_db, criar_sessao_db
 
 
 @pytest.mark.asyncio
-async def test_slots_distribuem_entre_consultores(sessao_db, criar_sessao_db):
+async def test_slots_mesclam_as_agendas_sem_atribuir_ninguem(
+    sessao_db, criar_sessao_db
+):
     await semear_consultores(sessao_db, quantos=3)
-    motor, _ = montar_engine(
+    motor, adaptador = montar_engine(
         criar_sessao_db,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("5"),
             txt("1"),
             txt("2"),
@@ -374,9 +445,17 @@ async def test_slots_distribuem_entre_consultores(sessao_db, criar_sessao_db):
     conversa_id = await motor.rodar()
     conversa = await sessao_db.get(Conversa, conversa_id)
     slots = conversa.contexto["slots_ofertados"]
-    # O lead escolhe um HORARIO; cada horario ja vem com um consultor resolvido.
-    assert all(s["consultor_nome"] for s in slots)
+
+    # O lead escolhe um HORARIO, e cada horario aparece uma vez so...
     assert len({s["inicio_utc"] for s in slots}) == len(slots)
+    # ...carregando TODOS que poderiam atende-lo. A lista nao e atribuicao: e
+    # capacidade, e a alternativa que a reserva usa se o primeiro for tomado.
+    assert all(len(s["consultores"]) == 3 for s in slots)
+
+    # E nenhum nome de consultor chega ao lead.
+    for mensagem in adaptador.enviadas:
+        assert "Ana Ribeiro" not in mensagem.conteudo
+        assert "Bruno Tavares" not in mensagem.conteudo
 
 
 @pytest.mark.asyncio
@@ -391,7 +470,6 @@ async def test_caminho_errado_diz_o_que_houve_em_vez_de_nao_entendi(
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
-            txt("pedro@exemplo.com.br"),
             txt("5"),
             txt("1"),
             txt("1"),

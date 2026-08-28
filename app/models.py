@@ -55,7 +55,10 @@ class Lead(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     nome: Mapped[str | None] = mapped_column(String(160))
-    telefone_e164: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Um contato basta: quem nao consegue informar um telefone valido e
+    #: identificado pelo e-mail. Por isso os dois sao opcionais aqui — mas a
+    #: conversa nunca cadastra um lead sem NENHUM dos dois: ela escala antes.
+    telefone_e164: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(320))
 
     fonte: Mapped[str | None] = mapped_column(String(32))
@@ -90,8 +93,20 @@ class Lead(Base):
     documentos: Mapped[list[Documento]] = relationship(back_populates="lead")
     agendamentos: Mapped[list[Agendamento]] = relationship(back_populates="lead")
 
+    # O telefone e a identidade quando existe — e no Postgres o UNIQUE trata cada
+    # vazio como distinto, entao varios leads sem telefone convivem.
+    #
+    # O e-mail so identifica quem NAO tem telefone, e por isso a trava dele e
+    # parcial. Unicidade simples no e-mail seria forte demais: duas pessoas da
+    # mesma casa podem dar o mesmo e-mail e telefones diferentes, e sao dois leads.
     __table_args__ = (
         UniqueConstraint("telefone_e164", name="uq_leads_telefone_e164"),
+        Index(
+            "uq_leads_email_sem_telefone",
+            "email",
+            unique=True,
+            postgresql_where=text("telefone_e164 IS NULL"),
+        ),
     )
 
 

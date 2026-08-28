@@ -48,3 +48,14 @@ def data_extenso(momento: datetime, timezone_exibicao: str) -> str:
 
 def hora(momento: datetime, timezone_exibicao: str) -> str:
     return para_local(momento, timezone_exibicao).strftime("%H:%M")
+
+
+def data_iso(momento: datetime, timezone_exibicao: str) -> str:
+    """Ex.: '2026-09-02', ja no fuso de exibicao.
+
+    O juridico monta a data da tarefa juntando `data` + `horario` como hora local
+    do servidor dele. Mandar o dia em UTC erraria a data toda vez que a reuniao
+    fosse de manha — 09:00 em Sao Paulo e 12:00 UTC do MESMO dia, mas 22:00 vira
+    o dia seguinte.
+    """
+    return para_local(momento, timezone_exibicao).strftime("%Y-%m-%d")

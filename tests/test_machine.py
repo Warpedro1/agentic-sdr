@@ -114,17 +114,72 @@ def test_telefone_invalido_usa_o_erro_especifico():
     assert chaves(t) == ["erro_telefone"]
 
 
-def test_terceira_falha_entrega_para_humano():
+def test_telefone_que_nao_sai_tenta_o_email_em_vez_de_escalar():
+    # Regra confirmada em 27/08/2026: um contato basta. Entregar a conversa a um
+    # humano so porque o numero nao sai desperdicaria um lead que ainda pode ser
+    # cadastrado pelo e-mail.
     t = handle(
         Estado.AGUARDANDO_TELEFONE, {}, ctx(nome="Pedro", tentativas=2), txt("abc")
+    )
+    assert t.novo_estado is Estado.AGUARDANDO_EMAIL
+    assert EscalarParaHumano not in tipos_efeito(t)
+    assert chaves(t) == ["pergunta_email_sem_telefone"]
+    assert t.ctx_updates["campos_dispensados"] == ["telefone"]
+
+
+def test_sem_telefone_e_sem_email_ai_sim_escala():
+    # Fim da linha: nenhum contato conhecido, nada a prometer.
+    t = handle(
+        Estado.AGUARDANDO_EMAIL,
+        {},
+        ctx(nome="Pedro", tentativas=2, campos_dispensados=["telefone"]),
+        txt("nao tenho"),
     )
     assert t.novo_estado is Estado.ESCALADO_HUMANO
     assert EscalarParaHumano in tipos_efeito(t)
     assert EncerrarConversa in tipos_efeito(t)
-    # Escalou ANTES de haver telefone: nao pode prometer um retorno que o time
-    # nao tem como fazer.
     assert chaves(t) == ["escalonamento_sem_contato"]
     assert not t.mensagens[0].conteudo.rstrip().endswith("no .")
+
+
+def test_email_valido_sem_telefone_cria_o_lead():
+    # Sem telefone e o e-mail que identifica: e ai que o lead nasce.
+    t = handle(
+        Estado.AGUARDANDO_EMAIL,
+        {},
+        ctx(nome="Pedro", campos_dispensados=["telefone"]),
+        txt("pedro@exemplo.com.br"),
+    )
+    assert t.novo_estado is Estado.RESOLVENDO_IDENTIDADE
+    efeito = t.efeitos[0]
+    assert efeito.telefone is None
+    assert efeito.email == "pedro@exemplo.com.br"
+
+
+def test_com_telefone_a_marina_nao_pergunta_o_email():
+    # Um contato basta: insistir no segundo so alonga a conversa.
+    t = handle(
+        Estado.RESOLVENDO_IDENTIDADE,
+        {"nome": "Pedro", "telefone_e164": "+5511987654321"},
+        ctx(telefone="+5511987654321", reconhecimento={}),
+        InboundMessage(),
+    )
+    assert t.novo_estado is Estado.AGUARDANDO_FONTE
+
+
+def test_fonte_incompreensivel_segue_sem_ela():
+    # A fonte e dado de marketing: nao qualifica ninguem, entao nao pode travar
+    # o atendimento. Tipo de contrato e "tem o contrato" continuam escalando.
+    t = handle(
+        Estado.AGUARDANDO_FONTE,
+        {"nome": "Pedro", "telefone_e164": "+5511987654321"},
+        ctx(tentativas=2, telefone="+5511987654321"),
+        txt("sei la"),
+    )
+    assert t.novo_estado is Estado.AGUARDANDO_TIPO_CONTRATO
+    assert EscalarParaHumano not in tipos_efeito(t)
+    assert "fonte" in t.ctx_updates["campos_dispensados"]
+    assert chaves(t)[0] == "fonte_dispensada"
 
 
 def test_escalonamento_com_telefone_promete_o_retorno():
@@ -306,14 +361,22 @@ def test_retomada_conversa_volta_ao_estado_anterior():
     assert chaves(t) == ["pergunta_fonte"]
 
 
-def test_retomada_conversa_recusada_recomeca_a_coleta():
+def test_retomada_conversa_recusada_refaz_a_qualificacao():
+    # "Comecar do zero" refaz a QUALIFICACAO, nao o cadastro: quem pediu para
+    # recomecar quer rever o caso, nao digitar o telefone de novo. Como o lead ja
+    # tem telefone, o e-mail nao volta a ser perguntado — um contato basta.
     t = handle(
         Estado.AGUARDANDO_RETOMADA_CONVERSA,
         {},
         ctx(reconhecimento={"lead_conhecido": LEAD_COMPLETO}),
         txt("2"),
     )
-    assert t.novo_estado is Estado.AGUARDANDO_EMAIL
+    assert t.novo_estado is Estado.AGUARDANDO_FONTE
+    assert t.lead_updates == {
+        "fonte": None,
+        "tipo_contrato": None,
+        "possui_contrato": None,
+    }
 
 
 # --- coleta -----------------------------------------------------------------
@@ -423,13 +486,17 @@ def test_sem_horarios_escala_para_humano():
     assert "+5511987654321" in t.mensagens[0].conteudo
 
 
-def test_escolha_de_horario_pede_confirmacao_com_o_consultor():
+def test_confirmacao_fala_do_horario_e_nao_de_uma_pessoa():
+    # A reuniao nasce sem dono: vai para o CRM em aberto e quem tiver
+    # disponibilidade pega. Prometer um nome que pode nao ser quem aparece e pior
+    # do que nao prometer nome nenhum.
     t = handle(
         Estado.AGUARDANDO_ESCOLHA_HORARIO, LEAD_COMPLETO, ctx(slots_ofertados=SLOTS), txt("2")
     )
     assert t.novo_estado is Estado.AGUARDANDO_CONFIRMACAO
-    assert t.ctx_updates["slot_escolhido"]["consultor_nome"] == "Bruno Tavares"
-    assert "Bruno Tavares" in t.mensagens[0].conteudo
+    conteudo = t.mensagens[0].conteudo
+    assert "15:15" in conteudo
+    assert "Bruno Tavares" not in conteudo
 
 
 def test_horario_fora_do_menu_repete():
@@ -479,8 +546,21 @@ def test_reserva_confirmada_encerra_agendado():
     )
     assert t.novo_estado is Estado.AGENDADO
     conteudo = t.mensagens[0].conteudo
-    assert "Ana Ribeiro" in conteudo
+    assert "Ana Ribeiro" not in conteudo
     assert "pedro@exemplo.com.br" in conteudo
+
+
+def test_agendado_sem_email_nao_promete_confirmacao_por_email():
+    # Lead que chegou so pelo telefone nao tem para onde receber o convite.
+    t = handle(
+        Estado.RESERVANDO,
+        {"nome": "Pedro Guerra", "telefone_e164": "+5511987654321"},
+        ctx(slot_escolhido=SLOTS[0], reserva={"ok": True}),
+        InboundMessage(),
+    )
+    assert t.novo_estado is Estado.AGENDADO
+    assert chaves(t) == ["agendado_sem_email"]
+    assert "Enviei a confirmação" not in t.mensagens[0].conteudo
 
 
 def test_reserva_perdida_reoferta_a_lista_recalculada():

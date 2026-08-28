@@ -75,6 +75,13 @@ async def pendentes(
 
     Quem esgotou as tentativas fica de fora: continua no banco para inspeção,
     mas não fica sendo retentado para sempre.
+
+    **`FOR UPDATE SKIP LOCKED` não é detalhe de performance — é correção.** A
+    drenagem é disparada a cada marco da conversa, então várias rodadas correm ao
+    mesmo tempo. Sem a reserva, todas liam o mesmo item pendente e todas o
+    entregavam: um lead virava três cadastros no CRM, criados no mesmo
+    milissegundo. Com ela, quem chegar depois simplesmente não enxerga o que já
+    está sendo processado, e a linha fica travada até o commit da rodada.
     """
     resultado = await sessao.execute(
         select(CrmOutbox)
@@ -85,6 +92,7 @@ async def pendentes(
         )
         .order_by(CrmOutbox.sequencia)
         .limit(limite)
+        .with_for_update(skip_locked=True)
     )
     return list(resultado.scalars().all())
 

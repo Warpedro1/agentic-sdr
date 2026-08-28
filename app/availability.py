@@ -128,26 +128,50 @@ async def gerar_candidatos(
     return candidatos
 
 
+@dataclass(frozen=True)
+class Oferta:
+    """Um horario mostrado ao lead, com todos que poderiam atende-lo.
+
+    A reuniao **nasce sem dono**: ela vai para o CRM em aberto e quem estiver
+    disponivel pega. Entao a lista de consultores nao e uma atribuicao — ela
+    existe por dois motivos:
+
+    1. capacidade: o horario so sai do menu quando TODOS estiverem ocupados;
+    2. reserva: se o primeiro for tomado entre a oferta e a confirmacao, a reserva
+       tenta o proximo em vez de fazer o lead escolher tudo de novo.
+    """
+
+    inicio_utc: datetime
+    fim_utc: datetime
+    #: Em ordem de carga — o menos carregado primeiro.
+    consultores: tuple[Candidato, ...]
+
+
 def montar_ofertas(
     candidatos: list[Candidato],
     cargas: dict[uuid.UUID, tuple[int, datetime | None]],
     limite: int,
-) -> list[Candidato]:
-    """Mescla os consultores num unico menu de horarios.
+) -> list[Oferta]:
+    """Mescla as agendas de todos num unico menu de horarios.
 
-    O lead escolhe um HORARIO, nao um consultor. Para cada horario distinto,
-    quem atende e decidido aqui pelo round-robin por carga — e ja fica definido,
-    porque a mensagem de confirmacao diz o nome antes de reservar.
+    O lead escolhe um HORARIO, e so. Um horario entra na lista se ALGUEM estiver
+    livre nele; quem vai atender fica em aberto.
     """
-    from app.routing import escolher_consultor
+    from app.routing import ordenar_por_carga
 
     por_horario: dict[datetime, list[Candidato]] = {}
     for candidato in candidatos:
         por_horario.setdefault(candidato.inicio_utc, []).append(candidato)
 
-    ofertas: list[Candidato] = []
+    ofertas: list[Oferta] = []
     for inicio in sorted(por_horario)[:limite]:
-        escolhido = escolher_consultor(por_horario[inicio], cargas)
-        if escolhido is not None:
-            ofertas.append(escolhido)
+        livres = ordenar_por_carga(por_horario[inicio], cargas)
+        if livres:
+            ofertas.append(
+                Oferta(
+                    inicio_utc=inicio,
+                    fim_utc=livres[0].fim_utc,
+                    consultores=tuple(livres),
+                )
+            )
     return ofertas

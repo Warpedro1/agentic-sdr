@@ -22,7 +22,7 @@ from app.integrations.juridico.cliente import (
     LeadDuplicado,
 )
 from app.integrations.juridico.mapeamento import (
-    payload_agendamento,
+    payload_tarefa,
     payload_lead,
     telefone_para_juridico,
     texto_qualificacao,
@@ -77,6 +77,15 @@ class EntregadorJuridico:
                     await self._entregar(sessao, item)
                     marcar_entregue(item, agora)
                     resumo["entregues"] += 1
+                except LeadAindaNaoEnviado:
+                    # NAO e falha: e ordem. O lead esta sendo criado por outra
+                    # rodada que ainda nao commitou. Contar como tentativa faria
+                    # o item esperar o backoff a toa, e ele so precisa da rodada
+                    # seguinte — que acontece em milissegundos.
+                    resumo["adiados"] += 1
+                    if item.lead_id:
+                        travados.add(item.lead_id)
+                    continue
                 except ErroJuridico as erro:
                     marcar_falha(
                         item,
@@ -161,9 +170,35 @@ class EntregadorJuridico:
     async def _entregar_agendamento(
         self, sessao: AsyncSession, item: CrmOutbox
     ) -> None:
+        """A reunião vai como TAREFA de CRM em aberto, não como agendamento.
+
+        Depende do lead já ter sido enviado só para que o texto da tarefa possa
+        citar o cadastro — quem pegar precisa conseguir chegar no lead.
+        """
         lead = await self._lead_local(sessao, item)
         if lead is None or not lead.crm_lead_id:
             raise LeadAindaNaoEnviado()
-        await self._cliente.criar_agendamento(
-            lead.crm_lead_id, payload_agendamento(item.payload or {})
+
+        responsavel = await self._cliente.usuario_id()
+        if not responsavel:
+            # Sem saber quem é o próprio usuário de serviço não há como criar a
+            # tarefa: o juridico exige responsável. É temporário — na próxima
+            # tentativa o login já terá trazido o id.
+            raise ErroJuridico("usuário de serviço do juridico desconhecido", status=503)
+
+        await self._cliente.criar_tarefa(
+            payload_tarefa(
+                item.payload or {},
+                lead={
+                    "nome": lead.nome,
+                    "telefone_e164": lead.telefone_e164,
+                    "email": lead.email,
+                    "fonte": lead.fonte,
+                    "fonte_raw": lead.fonte_raw,
+                    "tipo_contrato": lead.tipo_contrato,
+                    "possui_contrato": lead.possui_contrato,
+                },
+                responsavel_id=responsavel,
+                crm_lead_id=lead.crm_lead_id,
+            )
         )

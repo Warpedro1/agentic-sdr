@@ -19,6 +19,12 @@ pergunta_telefone:  "Prazer, {nome}! Qual o seu telefone com DDD? (ex.: 11 98765
 erro_telefone:      "Não consegui entender esse número. Pode mandar com DDD, assim: 11 98765-4321"
 pergunta_email:     "Perfeito. E qual o seu e-mail? É por ele que envio o convite da reunião."
 
+# Quando o telefone nao sai, o e-mail passa a ser o unico contato — e a pergunta
+# precisa dizer isso, senao a pessoa acha que a Marina ignorou o que ela tentou.
+pergunta_email_sem_telefone: |
+  Sem problema, deixa o telefone de lado. Me passa seu e-mail então? É por ele que
+  o consultor vai falar com você.
+
 pergunta_fonte: |
   Como você chegou até a Leve? Responda com o número:
   1 - Anúncio      2 - WhatsApp     3 - E-mail
@@ -53,12 +59,21 @@ oferta_horarios: |
 
 sem_horarios: |
   No momento não tenho horários nos próximos {dias} dias. Vou pedir para um consultor
-  entrar em contato no {telefone}.
+  entrar em contato no {contato}.
 
-confirmacao:  "Confirmando: {data_extenso}, às {hora}, com {consultor}. Está certo?\n1 - Sim  2 - Escolher outro"
+# A reuniao nao tem dono: ela fica em aberto no CRM e quem estiver disponivel pega.
+# Por isso nenhuma destas mensagens promete um nome — prometer alguem que pode nao
+# ser quem aparece e pior do que nao prometer ninguem.
+confirmacao:  "Confirmando: {data_extenso}, às {hora}. Está certo?\n1 - Sim  2 - Escolher outro"
 agendado: |
-  Prontinho, {nome}! Sua conversa está agendada para {data_extenso} às {hora} com {consultor}.
+  Prontinho, {nome}! Sua conversa está agendada para {data_extenso} às {hora}, com um
+  dos nossos consultores.
   Enviei a confirmação para {email}. Se precisar remarcar, é só me chamar.
+
+# Sem e-mail nao da para prometer o envio da confirmacao.
+agendado_sem_email: |
+  Prontinho, {nome}! Sua conversa está agendada para {data_extenso} às {hora}, com um
+  dos nossos consultores. Se precisar remarcar, é só me chamar.
 
 slot_perdido:     "Ih, esse horário acabou de ser preenchido. Escolhe outro?"
 nao_entendi:      "Desculpa, não entendi. {repeticao}"
@@ -66,7 +81,7 @@ fora_de_escopo: |
   Essa é uma ótima pergunta para o consultor — ele analisa seu contrato e te explica
   direitinho. Prefiro não dar um número sem olhar o seu caso. Vamos agendar?
 
-escalonamento:    "Acho melhor te passar para um consultor. Já avisei o time — em breve alguém te chama no {telefone}."
+escalonamento:    "Acho melhor te passar para um consultor. Já avisei o time — em breve alguém te chama no {contato}."
 opt_out:          "Tudo bem, encerrei nosso atendimento. Se mudar de ideia, é só chamar."
 
 # --- Acrescimos ---
@@ -80,6 +95,11 @@ pergunta_tipo_contrato: |
   3 - Cartão de crédito
 
 erro_tipo_contrato: "Responda com 1 para consignado, 2 para empréstimo pessoal ou 3 para cartão de crédito."
+
+# A fonte e dado de marketing: nao muda nada do que o consultor precisa preparar.
+# Depois das tentativas a Marina segue sem ela, em vez de entregar a conversa a um
+# humano por causa disso.
+fonte_dispensada: "Sem problema, deixa isso pra lá. Vamos em frente."
 
 retomada_opt_out: |
   Oi de novo! Você tinha pedido para encerrar nosso atendimento, então não continuo
@@ -95,9 +115,8 @@ retorno_reconhecido: |
 
 opt_out_mantido:  "Sem problema, mantive seu atendimento encerrado. Se mudar de ideia, é só chamar."
 
-# O escalonamento mais comum e justamente o que acontece ANTES de haver telefone
-# (tres tentativas de numero invalido). Sem esta variante, a mensagem terminaria
-# em "alguem te chama no ." — e o time nao teria como retornar de fato.
+# Sem telefone E sem e-mail nao ha para onde retornar. Sem esta variante a mensagem
+# terminaria em "alguem te chama no ." — prometendo um retorno impossivel.
 escalonamento_sem_contato: |
   Acho melhor te passar para um consultor. Como ainda não consegui registrar um
-  telefone válido, me chame de novo quando puder — aí eu sigo daqui com você.
+  telefone nem um e-mail, me chame de novo quando puder — aí eu sigo daqui com você.

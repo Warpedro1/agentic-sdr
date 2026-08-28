@@ -30,15 +30,16 @@ AGORA = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
 SNAPSHOT = Path(__file__).parent / "snapshots" / "conversa_caminho_feliz.txt"
 
+# Com telefone valido a Marina NAO pergunta o e-mail: um contato basta. Este e o
+# caminho mais curto e o mais comum — e por isso o que o snapshot congela.
 ROTEIRO = [
     "Pedro Guerra",
     "11 98765-4321",
-    "pedro@exemplo.com.br",
-    "5",
-    "1",
-    "2",
-    "1",
-    "1",
+    "5",  # fonte: indicacao
+    "1",  # tipo de contrato: consignado
+    "2",  # nao tem o contrato em maos
+    "1",  # primeiro horario
+    "1",  # confirma
 ]
 
 
