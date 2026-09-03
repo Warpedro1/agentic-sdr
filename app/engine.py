@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.availability import gerar_candidatos, montar_ofertas
@@ -69,6 +70,12 @@ CHAVES_TRANSITORIAS = frozenset(
 #: Numero maximo de reentradas seguidas. Um fluxo saudavel usa 1 ou 2; o limite
 #: existe so para que um bug futuro vire erro visivel em vez de laco infinito.
 MAX_REENTRADAS = 8
+
+#: Os dois estados que leem `ctx["reconhecimento"]` DEPOIS de esperar o lead
+#: responder. Ver `Engine._reconhecimento`.
+_ESTADOS_DE_RETOMADA = frozenset(
+    {Estado.AGUARDANDO_RETOMADA_OPT_OUT, Estado.AGUARDANDO_RETOMADA_CONVERSA}
+)
 
 
 @dataclass
@@ -150,7 +157,11 @@ class Engine:
         )
 
     async def rodar(self) -> uuid.UUID:
-        """Conduz a conversa ate um estado terminal. Devolve o id da conversa."""
+        """Conduz a conversa ate um estado terminal. Devolve o id da conversa.
+
+        E o laco de um canal que PUXA a mensagem — o terminal. Num canal em que a
+        mensagem chega sozinha, a entrada e `atender`.
+        """
         execucao = await self._abrir()
 
         # A saudacao nao espera entrada: o INICIO e disparado pelo engine.
@@ -185,10 +196,161 @@ class Engine:
         except Exception as erro:  # noqa: BLE001 - a conversa ja terminou bem
             logger.warning("crm_drenagem_final_falhou", erro=str(erro))
 
-    async def _abrir(self) -> Execucao:
+    async def atender(self, identidade: str, entrada: InboundMessage) -> uuid.UUID:
+        """Atende UMA mensagem que chegou sozinha. Devolve o id da conversa.
+
+        E a entrada dos canais de push (WhatsApp): nao ha laco, nao ha espera, e o
+        processo nao fica preso a ninguem. Cada chamada e um passo da conversa
+        daquela identidade — milhares delas podem correr em paralelo.
+        """
+        async with self._trava(identidade):
+            execucao, nova = await self._localizar_ou_abrir(identidade)
+            await self._registrar_entrada(execucao, entrada)
+            # Conversa recem-nascida: a mensagem que a abriu dispara a saudacao e
+            # NAO e consumida como resposta. Senao o "oi" viraria tentativa de
+            # nome e queimaria uma das tres antes de a Marina ter perguntado
+            # qualquer coisa. Ela continua na transcricao, registrada acima.
+            await self._processar(execucao, InboundMessage() if nova else entrada)
+
+        await self._aguardar_entregas()
+        await self._drenagem_final()
+        return execucao.conversa_id
+
+    @asynccontextmanager
+    async def _trava(self, chave: str) -> AsyncIterator[None]:
+        """Serializa o atendimento de uma mesma identidade.
+
+        Duas mensagens do mesmo lead chegando juntas nao podem avancar o estado ao
+        mesmo tempo: uma sobrescreveria o que a outra gravou, e a conversa pularia
+        ou repetiria uma pergunta.
+
+        A trava e do Postgres, e nao um lock em memoria, para valer com mais de um
+        worker. E de SESSAO, e nao de transacao, porque um turno abre varias
+        transacoes curtas (`_aplicar` e cada efeito).
+        """
+        argumento = {"chave": chave}
+        async with self._criar_sessao() as sessao:
+            await sessao.execute(
+                text("SELECT pg_advisory_lock(hashtextextended(:chave, 0))"), argumento
+            )
+            # Fecha a transacao mantendo a trava, para a conexao nao passar o turno
+            # inteiro idle-in-transaction.
+            await sessao.commit()
+            try:
+                yield
+            finally:
+                await sessao.execute(
+                    text("SELECT pg_advisory_unlock(hashtextextended(:chave, 0))"),
+                    argumento,
+                )
+                await sessao.commit()
+
+    async def _localizar_ou_abrir(self, identidade: str) -> tuple[Execucao, bool]:
+        """A conversa aberta desta identidade, ou uma nova. Diz qual dos dois."""
+        agora = self._agora()
+        limite = agora - timedelta(hours=self._config.janela_retomada_horas)
+
+        async with self._criar_sessao() as sessao:
+            conversa = (
+                await sessao.execute(
+                    select(Conversa).where(
+                        Conversa.canal == self._adaptador.canal,
+                        Conversa.identidade_externa == identidade,
+                        Conversa.encerrada_em.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if conversa is not None:
+                vencida = conversa.ultimo_contato_em < limite
+                # Terminal e aberta nao deveria existir (todo terminal emite
+                # EncerrarConversa), mas se acontecer o lead ficaria mudo para
+                # sempre: a maquina nao transiciona a partir dali.
+                encalhada = Estado(conversa.estado) in ESTADOS_TERMINAIS
+                if vencida or encalhada:
+                    conversa.encerrada_em = agora
+                    await sessao.commit()
+                    logger.info(
+                        "conversa_reciclada",
+                        conversa_id=str(conversa.id),
+                        motivo="vencida" if vencida else "terminal aberta",
+                    )
+                    conversa = None
+
+            if conversa is not None:
+                return await self._reidratar(sessao, conversa), False
+
+        return await self._abrir(identidade), True
+
+    async def _reidratar(self, sessao: AsyncSession, conversa: Conversa) -> Execucao:
+        """Monta a Execucao a partir da linha do banco.
+
+        No terminal a Execucao vive na memoria do laco. Aqui cada mensagem e um
+        processo do zero, entao tudo o que o laco carregava precisa voltar da
+        conversa — inclusive o contador da transcricao, que nao pode recomecar em
+        zero (`mensagens.sequencia` e unico por conversa).
+        """
+        lead: dict = {}
+        if conversa.lead_id is not None:
+            registro = await sessao.get(Lead, conversa.lead_id)
+            if registro is not None:
+                lead = self._lead_como_dict(registro)
+
+        ultima_sequencia = await sessao.scalar(
+            select(func.max(Mensagem.sequencia)).where(
+                Mensagem.conversa_id == conversa.id
+            )
+        )
+
+        ctx = dict(conversa.contexto or {})
+        # O JSONB devolve texto. `consentimento_em` volta a ser data porque vai
+        # direto para uma coluna de data quando o lead nascer.
+        consentimento = ctx.get("consentimento_em")
+        if isinstance(consentimento, str):
+            ctx["consentimento_em"] = datetime.fromisoformat(consentimento)
+
+        estado = Estado(conversa.estado)
+        if estado in _ESTADOS_DE_RETOMADA and lead:
+            ctx["reconhecimento"] = await self._reconhecimento(sessao, conversa, lead)
+
+        return Execucao(
+            conversa_id=conversa.id,
+            estado=estado,
+            lead_id=conversa.lead_id,
+            lead=lead,
+            ctx=ctx,
+            proxima_sequencia=int(ultima_sequencia or 0),
+        )
+
+    async def _reconhecimento(
+        self, sessao: AsyncSession, conversa: Conversa, lead: dict
+    ) -> dict:
+        """Reconstroi o que a maquina precisa nos estados de retomada.
+
+        `reconhecimento` e transitorio de proposito — e resultado de I/O, e
+        persisti-lo daria a impressao de que continua valido. Mas os dois estados
+        de retomada leem essa chave DEPOIS de esperar o lead responder, e no
+        terminal ela sobrevivia na memoria do laco. Aqui ela e refeita do banco,
+        que e a fonte, em vez de ressuscitada do JSONB.
+        """
+        anterior = (
+            await sessao.execute(
+                select(Conversa)
+                .where(Conversa.lead_id == conversa.lead_id, Conversa.id != conversa.id)
+                .order_by(desc(Conversa.ultimo_contato_em))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return {
+            "lead_conhecido": lead,
+            "ultimo_estado": anterior.estado if anterior is not None else None,
+        }
+
+    async def _abrir(self, identidade: str | None = None) -> Execucao:
         async with self._criar_sessao() as sessao:
             conversa = Conversa(
                 canal=self._adaptador.canal,
+                identidade_externa=identidade,
                 estado=Estado.INICIO.value,
                 tentativas=0,
                 contexto={},

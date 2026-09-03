@@ -14,17 +14,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.aio import executar
 from app.channels.terminal import TerminalAdapter
+from app.composicao import montar_dependencias
+from app.composicao import montar_motor as montar_motor_com
 from app.config import Configuracao, obter_configuracao
 from app.db import encerrar, obter_engine
-from app.engine import Engine
-from app.integrations.juridico.fabrica import (
-    integracao_ativa,
-    montar_cliente,
-    montar_entregador,
-    montar_sink,
-)
 from app.logging import configurar_logging
-from app.storage.local import LocalDocumentStorage
 
 
 def _forcar_utf8() -> None:
@@ -64,20 +58,11 @@ def montar_motor(criar_sessao, adaptador, config: Configuracao):
     Separado de `main` para poder ser testado: a fiação do CLI já quebrou uma vez
     sem nenhum teste perceber, porque nada aqui era exercitado.
 
-    Com a integração desligada, `cliente` é None e o sink vira o no-op — a Marina
-    roda sozinha, exatamente como antes de existir CRM externo.
+    Casca sobre `app.composicao`, que é onde a fiação mora hoje — o WhatsApp
+    precisa montar as mesmas peças uma vez e o engine por mensagem.
     """
-    cliente = montar_cliente(config) if integracao_ativa(config) else None
-    entregador = montar_entregador(criar_sessao, cliente, config) if cliente else None
-    motor = Engine(
-        criar_sessao=criar_sessao,
-        adaptador=adaptador,
-        config=config,
-        armazenamento=LocalDocumentStorage(config),
-        crm=montar_sink(criar_sessao, config),
-        entregador=entregador,
-    )
-    return motor, cliente
+    deps = montar_dependencias(criar_sessao, config)
+    return montar_motor_com(deps, adaptador), deps.cliente
 
 
 if __name__ == "__main__":

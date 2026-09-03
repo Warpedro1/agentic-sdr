@@ -26,8 +26,27 @@ class Configuracao(BaseSettings):
 
     # Documentos
     storage_dir: str = "storage"
-    doc_max_bytes: int = 20 * 1024 * 1024
+    #: 16 MiB e o teto da Twilio por mensagem. Aceitar mais aqui so adiaria a
+    #: recusa para um lugar onde a Marina nao tem como avisar o lead.
+    doc_max_bytes: int = 16 * 1024 * 1024
     doc_extensoes: str = "pdf,jpg,jpeg,png,doc,docx"
+
+    # WhatsApp via Twilio
+    #: Do Console da Twilio. O auth token e o segredo que assina os webhooks —
+    #: sem ele, qualquer um que descubra o endereco cria lead e reuniao falsos.
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    #: Numero remetente em E.164, com ou sem o prefixo `whatsapp:`. No sandbox e o
+    #: numero compartilhado da Twilio; em producao, o do escritorio.
+    twilio_whatsapp_from: str = ""
+    #: O endereco publico EXATO configurado no Console (sem barra no fim). A
+    #: assinatura e calculada sobre a URL completa: se este valor divergir do que
+    #: a Twilio chamou, toda chamada e rejeitada.
+    twilio_url_publica: str = "http://localhost:8000"
+    #: So o teste desliga. Em producao, desligar abre a porta para qualquer um.
+    twilio_validar_assinatura: bool = True
+    whatsapp_host: str = "127.0.0.1"
+    whatsapp_porta: int = 8000
 
     # CRM externo (hoje o `juridico`)
     #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
@@ -48,6 +67,14 @@ class Configuracao(BaseSettings):
     #: Arquivo de log. Vazio = escreve no terminal, o que no CLI mistura JSON no
     #: meio da conversa e deixa o atendimento ilegivel.
     log_arquivo: str = "marina.log"
+
+    @property
+    def twilio_remetente(self) -> str:
+        """O remetente no formato que a API quer: `whatsapp:+55...`."""
+        numero = self.twilio_whatsapp_from.strip()
+        if not numero:
+            return ""
+        return numero if numero.startswith("whatsapp:") else f"whatsapp:{numero}"
 
     @property
     def extensoes_permitidas(self) -> frozenset[str]:

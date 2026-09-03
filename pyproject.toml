@@ -11,6 +11,9 @@ dependencies = [
     "structlog>=24.4.0",
     "pyyaml>=6.0.2",
     "httpx>=0.28.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "twilio>=9.3.0",
 ]
 
 [project.optional-dependencies]

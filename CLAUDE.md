@@ -16,10 +16,11 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"    # Linux/macOS: .venv/bin/python
 
 docker compose up -d          # Postgres 16 na 5432 (marina/marina/marina)
-alembic upgrade head          # head atual: 0004_contato_opcional
+alembic upgrade head          # head atual: 0005_conversa_whatsapp
 python scripts/seed.py        # 3 consultores + agenda seg-sex 9h-18h
 
 python -m app.cli             # conversa com a Marina no terminal
+python -m app.whatsapp        # servidor do webhook da Twilio (:8000)
 ```
 
 Não há `.env` versionado — copie o `.env.example`. `alembic/env.py` lê a URL do
@@ -28,15 +29,15 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 317 testes
+pytest                                              # 345 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
 ```
 
-`tests/test_machine.py`, `test_parsers.py`, `test_guards.py`, `test_machine_pura.py`
-e `test_juridico_mapeamento.py` **não tocam o banco** e rodam em menos de um
-segundo. Os demais usam a fixture `sessao_db` (`tests/conftest.py`), que cria o
+`tests/test_machine.py`, `test_parsers.py`, `test_guards.py`, `test_machine_pura.py`,
+`test_juridico_mapeamento.py` e `test_whatsapp_adaptador.py` **não tocam o banco**
+e rodam em menos de um segundo. Os demais usam a fixture `sessao_db` (`tests/conftest.py`), que cria o
 banco `marina_test` à parte e **pula com mensagem clara** se o Postgres não
 estiver no ar — um skip em massa quase sempre significa `docker compose up -d`,
 não um bug.
@@ -55,6 +56,7 @@ python scripts/dump_lead.py --telefone "+5511987654321"   # cadastro + transcri�
 python scripts/sync_consultores.py                        # importa consultores do juridico
 python scripts/configurar_agenda.py --listar              # define quem atende quando
 python scripts/flush_outbox.py [--falhados|--reprocessar] # força a entrega ao juridico
+python scripts/simular_webhook_twilio.py --texto "oi"     # webhook assinado, sem ngrok
 ```
 
 ## Arquitetura
@@ -92,12 +94,30 @@ digitação**: ela emite um `Efeito` e para. O engine executa, grava o resultado
 em `Engine._processar`, limitado a `MAX_REENTRADAS = 8` para que um bug vire erro
 visível em vez de laço infinito.
 
-É esse mecanismo que faz um adaptador de WhatsApp caber depois **sem tocar no
-fluxo**: lá o telefone é conhecido na mensagem zero, então o engine resolve a
-identidade antes do primeiro `handle`.
-
 Efeito novo se declara como dataclass frozen em `machine.py` e se executa em
 `Engine._executar_efeitos` — nunca inline na máquina.
+
+### Duas entradas no engine: `rodar()` e `atender()`
+
+`rodar()` é o laço de um canal que **puxa** a mensagem — o terminal. Abre a
+conversa, dispara a saudação e fica esperando `adaptador.receber()`.
+
+`atender(identidade, entrada)` é a entrada de um canal em que a **mensagem chega
+sozinha** (WhatsApp). Não há laço: cada chamada é um passo da conversa daquela
+identidade, e o processo não fica preso a ninguém. Por isso a `Execucao` é
+reidratada do banco a cada mensagem (`_reidratar`) em vez de viver na memória —
+inclusive o contador da transcrição, que não pode recomeçar em zero.
+
+Não force um no outro. A semântica difere na primeira mensagem: no terminal a
+saudação vem antes da primeira digitação, e a linha digitada é o nome; no WhatsApp
+a mensagem que abre a conversa dispara a saudação e **não** é consumida como
+resposta. Os dois compartilham tudo abaixo de `_processar`.
+
+`conversas.identidade_externa` é o que liga uma mensagem à sua conversa antes de
+existir lead, e o índice parcial `uq_conversa_aberta_por_identidade` garante uma
+conversa aberta por número. A concorrência é serializada por
+`pg_advisory_lock` de sessão (`Engine._trava`) — de sessão, e não de transação,
+porque um turno abre várias transações curtas.
 
 ### O adaptador é burro, e a entrada é tipada
 
@@ -106,6 +126,13 @@ Efeito novo se declara como dataclass frozen em `machine.py` e se executa em
 motivo concreto: com string crua, a máquina teria que olhar o disco para saber se
 aquele texto é um caminho de arquivo. `TerminalAdapter` é o único componente
 autorizado a tocar o disco; `ScriptedAdapter` é o usado nos testes.
+
+`TwilioWhatsAppAdapter` (`app/channels/whatsapp_twilio.py`) faz o mesmo pelo
+WhatsApp: `receber()` devolve None (ninguém puxa; quem dirige é o webhook), e ele
+é criado **por turno** amarrado ao destino, porque `enviar()` não carrega
+destinatário. A mídia é **baixada para um arquivo temporário** e é o caminho dele
+que vai em `Anexo.origem` — guardar a `MediaUrl` quebraria `LocalDocumentStorage`,
+que lê o arquivo e valida pela extensão.
 
 ### Nenhuma resposta é gerada
 
@@ -154,6 +181,22 @@ com revalidação dentro da trava, **mais** o índice parcial
 dispara, **isso não é erro** — é o caminho normal do segundo lead, que recebe
 `slot_perdido`. Tudo atrás da interface `CalendarProvider` (`app/calendar.py`),
 para o Google Calendar entrar sem tocar na máquina de estados.
+
+### WhatsApp pela Twilio
+
+Desligado por padrão no sentido de que nada sobe sem `python -m app.whatsapp`.
+`app/web/webhook.py` tem as rotas; a ordem lá não é negociável: **assinatura**
+(`X-Twilio-Signature`, senão 403 e nada acontece) → **idempotência**
+(`mensagens_recebidas`, UNIQUE por `MessageSid`) → **atender fora da requisição**
+e devolver 204 vazio. Não devolvemos TwiML: quem envia é a REST API, que é o que
+permite mandar várias mensagens em ordem e registrar cada uma na transcrição.
+
+A URL usada para conferir a assinatura vem de `TWILIO_URL_PUBLICA`, não dos
+cabeçalhos — o endereço do ngrok muda a cada reinício, e esquecer de atualizar a
+variável faz **toda** chamada virar 403.
+
+`scripts/simular_webhook_twilio.py` exercita isso sem ngrok e sem conta.
+Documentação: `docs/whatsapp/`.
 
 ### Integração com o `juridico`
 

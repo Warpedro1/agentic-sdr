@@ -118,6 +118,14 @@ class Conversa(Base):
         ForeignKey("leads.id", ondelete="CASCADE")
     )
     canal: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Quem esta do outro lado, do jeito que o canal identifica: o telefone E.164
+    #: no WhatsApp, vazio no terminal.
+    #:
+    #: Existe porque `lead_id` e nulo ate o telefone ser validado, e num canal em
+    #: que a mensagem chega sozinha e preciso descobrir de qual conversa ela faz
+    #: parte ANTES de existir lead. No WhatsApp essa identidade chega junto com a
+    #: primeira mensagem.
+    identidade_externa: Mapped[str | None] = mapped_column(String(40))
     estado: Mapped[str] = mapped_column(String(40), nullable=False)
     tentativas: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     contexto: Mapped[dict] = mapped_column(
@@ -134,6 +142,19 @@ class Conversa(Base):
 
     __table_args__ = (
         Index("ix_conversas_lead_ultimo_contato", "lead_id", "ultimo_contato_em"),
+        # Serve a duas coisas ao mesmo tempo: achar a conversa aberta de um numero
+        # em uma consulta, e impedir que duas mensagens simultaneas do mesmo lead
+        # criem duas conversas. E parcial porque so vale enquanto a conversa esta
+        # aberta — o mesmo numero volta amanha e abre outra.
+        Index(
+            "uq_conversa_aberta_por_identidade",
+            "canal",
+            "identidade_externa",
+            unique=True,
+            postgresql_where=text(
+                "encerrada_em IS NULL AND identidade_externa IS NOT NULL"
+            ),
+        ),
     )
 
 
@@ -160,6 +181,31 @@ class Mensagem(Base):
     __table_args__ = (
         Index("ix_mensagens_conversa_criada", "conversa_id", "criada_em"),
         UniqueConstraint("conversa_id", "sequencia", name="uq_mensagem_sequencia"),
+    )
+
+
+class MensagemRecebida(Base):
+    """Idempotencia das mensagens que chegam de um canal externo.
+
+    O fornecedor pode entregar a mesma mensagem duas vezes (retentativa, uma
+    resposta lenta que ele considerou perdida). Sem esta trava, a mesma mensagem
+    viraria dois passos da conversa — e no meio de uma pergunta com contador de
+    tentativas isso muda o rumo do atendimento.
+
+    E tabela, e nao um conjunto em memoria, porque a garantia precisa sobreviver a
+    um restart do processo.
+    """
+
+    __tablename__ = "mensagens_recebidas"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    canal: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Identificador do fornecedor. No Twilio e o `MessageSid`.
+    id_externo: Mapped[str] = mapped_column(String(64), nullable=False)
+    recebida_em: Mapped[datetime] = _agora()
+
+    __table_args__ = (
+        UniqueConstraint("canal", "id_externo", name="uq_mensagem_recebida_externa"),
     )
 
 
