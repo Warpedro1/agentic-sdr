@@ -32,3 +32,5 @@ marina.log
 .vscode/
 *.swp
 .DS_Store
+
+agentic-sdr.code-workspace
