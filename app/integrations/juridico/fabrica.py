@@ -24,7 +24,7 @@ class IntegracaoDesligada(Exception):
 
 def integracao_ativa(config: Configuracao | None = None) -> bool:
     config = config or obter_configuracao()
-    return bool(config.juridico_ativo and config.juridico_login and config.juridico_senha)
+    return bool(config.juridico_ativo and config.juridico_token)
 
 
 def montar_sink(
@@ -45,12 +45,12 @@ def montar_cliente(config: Configuracao | None = None) -> ClienteJuridico:
     config = config or obter_configuracao()
     if not integracao_ativa(config):
         raise IntegracaoDesligada(
-            "defina JURIDICO_ATIVO=true, JURIDICO_LOGIN e JURIDICO_SENHA no .env"
+            "defina JURIDICO_ATIVO=true e JURIDICO_TOKEN no .env "
+            "(gere o token no juridico com `php artisan integracao:usuario`)"
         )
     return ClienteJuridico(
         base_url=config.juridico_base_url,
-        login=config.juridico_login,
-        senha=config.juridico_senha,
+        token=config.juridico_token,
         timeout_s=config.juridico_timeout_s,
     )
 

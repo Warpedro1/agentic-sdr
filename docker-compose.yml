@@ -18,5 +18,23 @@ services:
       timeout: 5s
       retries: 10
 
+  adminer:
+    # O phpMyAdmin nao fala com PostgreSQL — so MySQL/MariaDB. O Adminer fala os
+    # dois, entao daqui da para abrir tanto o banco da Marina quanto o do
+    # juridico. Acesso em http://localhost:8082.
+    image: adminer:5
+    container_name: marina-adminer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8082:8080"
+    extra_hosts:
+      # Deixa o MariaDB do juridico alcancavel como host.docker.internal:3306,
+      # mesmo ele estando na rede do outro compose.
+      - "host.docker.internal:host-gateway"
+
 volumes:
   marina-pgdata:

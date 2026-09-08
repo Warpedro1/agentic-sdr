@@ -1,29 +1,22 @@
-"""Cliente HTTP do juridico: autenticação e as chamadas que a Marina usa.
+"""Cliente HTTP do juridico: as chamadas que a Marina usa.
 
-O detalhe que governa o desenho da autenticação: **o juridico limita o login a
-10 tentativas por 15 minutos, com bloqueio progressivo depois de falhas.** Um
-cliente que fizesse login por requisição seria bloqueado no primeiro dia de uso
-real e ficaria fora do ar por minutos.
+Autenticação é um token fixo, emitido uma vez no juridico
+(`php artisan integracao:usuario`) e guardado no `.env`. Não há login nem
+renovação: nada a expirar no meio de um atendimento, e nada de rate limit de
+login para administrar.
 
-Por isso: login uma vez, token guardado em memória, renovação pelo refreshToken
-(o token de acesso dura 15 minutos, a sessão dura 30 dias). Login só volta a
-acontecer se a renovação também falhar.
+O token pertence a um usuário de serviço lá dentro, e é dele que o juridico tira
+a empresa e as permissões. Ou seja: quem manda no escopo é o cadastro remoto,
+não este arquivo.
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 import httpx
 
 from app.logging import obter_logger
 
 logger = obter_logger("juridico.cliente")
-
-#: Renovar um pouco antes de expirar evita a corrida entre "token ainda vale" e
-#: "token expirou no meio da requisição".
-FOLGA_RENOVACAO = timedelta(seconds=60)
 
 
 class ErroJuridico(Exception):
@@ -35,10 +28,10 @@ class ErroJuridico(Exception):
 
     #: Falhas que MELHORAM sozinhas ou com uma correção de configuração, e por
     #: isso merecem nova tentativa. 401/403 estão aqui de propósito: para um
-    #: usuário de serviço, "credenciais inválidas" é problema de configuração —
-    #: alguém troca a senha no .env e o que estava na fila precisa fluir. Tratar
-    #: como permanente matava o lead: uma única recusa queimava as cinco
-    #: tentativas e o item ficava morto, sem nem o flush manual recuperar.
+    #: usuário de serviço, "não autorizado" é problema de configuração — alguém
+    #: troca o token no .env e o que estava na fila precisa fluir. Tratar como
+    #: permanente matava o lead: uma única recusa queimava as cinco tentativas e
+    #: o item ficava morto, sem nem o flush manual recuperar.
     STATUS_RECUPERAVEIS = frozenset({401, 403, 429})
 
     @property
@@ -51,218 +44,152 @@ class ErroJuridico(Exception):
         )
 
 
-class LeadDuplicado(ErroJuridico):
-    """O juridico recusou o lead porque já existe alguém com aquele contato.
-
-    Não é erro: é a resposta que diz "essa pessoa já está aqui". O juridico
-    devolve 400 e NÃO devolve o registro existente, então quem chama precisa ir
-    buscar o lead pelo telefone.
-    """
-
-
-@dataclass
-class Sessao:
-    token: str
-    refresh_token: str
-    expira_em: datetime
-    #: Id do proprio usuario de serviço no juridico. A tarefa da reunião nasce
-    #: no nome dele — é assim que "em aberto" é representado, já que o juridico
-    #: exige responsável em toda tarefa.
-    usuario_id: str | None = None
-
-    def valido(self, agora: datetime) -> bool:
-        return agora + FOLGA_RENOVACAO < self.expira_em
-
-
 class ClienteJuridico:
     def __init__(
         self,
         base_url: str,
-        login: str,
-        senha: str,
+        token: str,
         timeout_s: float = 15.0,
         transport: httpx.AsyncBaseTransport | None = None,
-        relogio=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._login = login
-        self._senha = senha
-        self._sessao: Sessao | None = None
-        self._relogio = relogio or (lambda: datetime.now(UTC))
         self._http = httpx.AsyncClient(
-            base_url=self._base_url, timeout=timeout_s, transport=transport
+            base_url=self._base_url,
+            timeout=timeout_s,
+            transport=transport,
+            headers={
+                "Authorization": f"Bearer {token}",
+                # Obrigatório, não cosmético: sem este cabeçalho o Laravel trata
+                # a chamada como navegador. Um token inválido viraria 302 para a
+                # tela de login e um erro de validação viraria redirecionamento —
+                # ambos lidos aqui como resposta definitiva, matando o item na
+                # fila em vez de deixá-lo tentar de novo.
+                "Accept": "application/json",
+            },
         )
 
     async def fechar(self) -> None:
         await self._http.aclose()
 
-    # --- autenticacao -------------------------------------------------------
-
-    async def _autenticar(self) -> Sessao:
-        resposta = await self._http.post(
-            "/api/auth/login", json={"login": self._login, "senha": self._senha}
-        )
-        if resposta.status_code == 429:
-            raise ErroJuridico(
-                "login bloqueado por excesso de tentativas", resposta.status_code
-            )
-        if resposta.status_code != 200:
-            raise ErroJuridico(
-                f"login recusado: {self._detalhe(resposta)}", resposta.status_code
-            )
-        return self._sessao_da_resposta(resposta.json())
-
-    async def _renovar(self, refresh_token: str) -> Sessao | None:
-        resposta = await self._http.post(
-            "/api/auth/refresh", json={"refreshToken": refresh_token}
-        )
-        if resposta.status_code != 200:
-            return None
-        return self._sessao_da_resposta(resposta.json())
-
-    def _sessao_da_resposta(self, corpo: dict) -> Sessao:
-        token = corpo.get("token")
-        if not token:
-            raise ErroJuridico("resposta de autenticação sem token")
-        # `accessTokenExpiresIn` vem em segundos. Se faltar, assume o padrao do
-        # juridico (15 min) em vez de tratar o token como eterno.
-        segundos = int(corpo.get("accessTokenExpiresIn") or 900)
-        usuario_id = corpo.get("id")
-        return Sessao(
-            token=token,
-            refresh_token=str(corpo.get("refreshToken") or ""),
-            expira_em=self._relogio() + timedelta(seconds=segundos),
-            # O refresh nao repete o id; preserva o que o login trouxe.
-            usuario_id=str(usuario_id)
-            if usuario_id
-            else (self._sessao.usuario_id if self._sessao else None),
-        )
-
-    async def usuario_id(self) -> str | None:
-        """Id do usuário de serviço, garantindo que há sessão."""
-        await self._token()
-        return self._sessao.usuario_id if self._sessao else None
-
-    async def _token(self) -> str:
-        agora = self._relogio()
-        if self._sessao and self._sessao.valido(agora):
-            return self._sessao.token
-
-        if self._sessao and self._sessao.refresh_token:
-            renovada = await self._renovar(self._sessao.refresh_token)
-            if renovada is not None:
-                self._sessao = renovada
-                return renovada.token
-            logger.info("juridico_refresh_falhou_refazendo_login")
-
-        self._sessao = await self._autenticar()
-        return self._sessao.token
-
-    # --- requisicao ---------------------------------------------------------
+    # --- transporte ---------------------------------------------------------
 
     @staticmethod
     def _detalhe(resposta: httpx.Response) -> str:
+        """Mensagem legível a partir do corpo de erro do Laravel.
+
+        Achatar `errors` importa: é este texto que fica em
+        `crm_outbox.ultimo_erro` e que uma pessoa lê no `flush_outbox.py
+        --falhados`. "Os dados fornecidos são inválidos" sem dizer qual campo
+        não ajuda ninguém a consertar nada.
+        """
         try:
-            return str(resposta.json().get("message") or resposta.text)[:300]
+            corpo = resposta.json()
         except ValueError:
             return resposta.text[:300]
 
-    async def _requisitar(
-        self, metodo: str, caminho: str, *, json: dict | None = None, params: dict | None = None
-    ) -> httpx.Response:
-        token = await self._token()
-        cabecalhos = {"Authorization": f"Bearer {token}"}
-        try:
-            resposta = await self._http.request(
-                metodo, caminho, json=json, params=params, headers=cabecalhos
-            )
-        except httpx.HTTPError as erro:
-            raise ErroJuridico(f"falha de rede: {erro}") from erro
+        if not isinstance(corpo, dict):
+            return str(corpo)[:300]
 
-        if resposta.status_code == 401:
-            # Sessão revogada do outro lado. Uma segunda chance com token novo,
-            # e só uma: repetir em laço viraria martelo no rate limit do login.
-            self._sessao = None
-            token = await self._token()
-            resposta = await self._http.request(
-                metodo, caminho, json=json, params=params, headers={"Authorization": f"Bearer {token}"}
+        mensagem = str(corpo.get("message") or "")
+        erros = corpo.get("errors")
+        if isinstance(erros, dict):
+            campos = "; ".join(
+                f"{campo}: {' '.join(str(m) for m in mensagens)}"
+                if isinstance(mensagens, list)
+                else f"{campo}: {mensagens}"
+                for campo, mensagens in erros.items()
             )
-        return resposta
+            if campos:
+                mensagem = f"{mensagem} ({campos})" if mensagem else campos
+
+        return (mensagem or resposta.text)[:300]
+
+    async def _requisitar(
+        self,
+        metodo: str,
+        caminho: str,
+        *,
+        json: dict | None = None,
+        params: dict | None = None,
+    ) -> httpx.Response:
+        try:
+            return await self._http.request(metodo, caminho, json=json, params=params)
+        except httpx.HTTPError as erro:
+            # Sem status: falha de rede é sempre temporária.
+            raise ErroJuridico(f"falha de rede: {erro}") from erro
 
     # --- operacoes ----------------------------------------------------------
 
-    async def listar_consultores(self, filial_id: str | None = None) -> list[dict]:
-        """Consultores elegíveis — a mesma fonte que alimenta o rodízio do juridico."""
-        params = {"filialId": filial_id} if filial_id else None
-        resposta = await self._requisitar(
-            "GET", "/api/admin/leads/responsaveis", params=params
-        )
+    async def contexto(self) -> dict:
+        """Confere o token e diz onde os leads vão cair. Útil como diagnóstico."""
+        resposta = await self._requisitar("GET", "/api/integracao/contexto")
         if resposta.status_code != 200:
             raise ErroJuridico(
-                f"nao foi possivel listar consultores: {self._detalhe(resposta)}",
-                resposta.status_code,
+                f"contexto recusado: {self._detalhe(resposta)}", resposta.status_code
             )
-        corpo = resposta.json()
-        return corpo if isinstance(corpo, list) else corpo.get("items", [])
+        return resposta.json()
 
-    async def criar_lead(self, payload: dict) -> str:
-        resposta = await self._requisitar("POST", "/api/admin/leads", json=payload)
-        if resposta.status_code in (200, 201):
-            return str(resposta.json()["id"])
-        detalhe = self._detalhe(resposta)
-        if resposta.status_code == 400 and "já cadastrado" in detalhe:
-            raise LeadDuplicado(detalhe, resposta.status_code)
-        raise ErroJuridico(f"criacao de lead recusada: {detalhe}", resposta.status_code)
+    async def criar_negociacao(self, payload: dict) -> str:
+        """Cria (ou recupera) a negociação do lead e devolve o id dela.
 
-    async def buscar_lead_por_telefone(self, telefone: str) -> str | None:
-        """Usado quando a criação bate na deduplicação do juridico.
-
-        O juridico compara telefone pelos últimos 8 dígitos, então a busca usa o
-        mesmo trecho — buscar pelo número inteiro erraria por causa de formatação.
+        200 e 201 são ambos sucesso, e a diferença importa pouco aqui: 201 é
+        negociação nova, 200 é o servidor reconhecendo pela `referencia_externa`
+        que este envio já tinha chegado. Nos dois casos o id é o certo.
         """
-        if not telefone:
-            return None
         resposta = await self._requisitar(
-            "GET", "/api/admin/leads", params={"q": telefone[-8:]}
-        )
-        if resposta.status_code != 200:
-            raise ErroJuridico(
-                f"busca de lead falhou: {self._detalhe(resposta)}", resposta.status_code
-            )
-        itens = resposta.json().get("items") or []
-        alvo = "".join(c for c in telefone if c.isdigit())[-8:]
-        for item in itens:
-            registrado = "".join(c for c in str(item.get("telefoneCelular") or "") if c.isdigit())
-            if registrado.endswith(alvo):
-                return str(item["id"])
-        return None
-
-    async def registrar_primeiro_contato(
-        self, lead_id: str, observacao: str, canal: str = "WHATSAPP"
-    ) -> None:
-        resposta = await self._requisitar(
-            "POST",
-            f"/api/admin/leads/{lead_id}/primeiro-contato",
-            json={"canal": canal, "observacao": observacao},
+            "POST", "/api/integracao/negociacoes", json=payload
         )
         if resposta.status_code not in (200, 201):
             raise ErroJuridico(
-                f"primeiro contato recusado: {self._detalhe(resposta)}",
+                f"criacao de negociacao recusada: {self._detalhe(resposta)}",
                 resposta.status_code,
             )
+        corpo = resposta.json()
+        identificador = corpo.get("id") if isinstance(corpo, dict) else None
+        if not identificador:
+            raise ErroJuridico("resposta da negociacao veio sem id")
+        return str(identificador)
 
-    async def criar_tarefa(self, payload: dict) -> str:
-        """Cria a reunião como tarefa de CRM, em aberto.
+    async def registrar_observacao(self, negociacao_id: str, conteudo: str) -> None:
+        resposta = await self._requisitar(
+            "POST",
+            f"/api/integracao/negociacoes/{negociacao_id}/observacoes",
+            json={"conteudo": conteudo},
+        )
+        if resposta.status_code not in (200, 201):
+            raise ErroJuridico(
+                f"observacao recusada: {self._detalhe(resposta)}", resposta.status_code
+            )
 
-        Não é agendamento com dono: a tarefa nasce no nome do próprio usuário de
-        serviço e fica esperando quem tiver disponibilidade pegar. Ela aparece no
-        calendário do juridico com a etiqueta CRM, como qualquer outra.
+    async def criar_tarefa(self, negociacao_id: str, payload: dict) -> str:
+        """Cria a reunião como tarefa da negociação, em aberto.
+
+        Não mandamos responsável: o juridico usa o usuário do token, e é assim
+        que "sem dono" é representado — a tarefa fica parada no nome do serviço
+        até alguém com disponibilidade assumir.
         """
         resposta = await self._requisitar(
-            "POST", "/api/admin/crm/tarefas", json=payload
+            "POST",
+            f"/api/integracao/negociacoes/{negociacao_id}/tarefas",
+            json=payload,
         )
         if resposta.status_code not in (200, 201):
             raise ErroJuridico(
                 f"tarefa recusada: {self._detalhe(resposta)}", resposta.status_code
             )
-        return str(resposta.json()["id"])
+        corpo = resposta.json()
+        identificador = corpo.get("id") if isinstance(corpo, dict) else None
+        if not identificador:
+            raise ErroJuridico("resposta da tarefa veio sem id")
+        return str(identificador)
+
+    async def listar_usuarios(self) -> list[dict]:
+        """Usuários ativos da empresa no juridico."""
+        resposta = await self._requisitar("GET", "/api/integracao/usuarios")
+        if resposta.status_code != 200:
+            raise ErroJuridico(
+                f"nao foi possivel listar usuarios: {self._detalhe(resposta)}",
+                resposta.status_code,
+            )
+        corpo = resposta.json()
+        return corpo if isinstance(corpo, list) else corpo.get("items", [])

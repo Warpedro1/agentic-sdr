@@ -1,15 +1,14 @@
 """Importa os consultores do juridico para a Marina.
 
-    python scripts/sync_consultores.py [--filial <id>]
+    python scripts/sync_consultores.py
 
-Por que importar em vez de cadastrar à mão: o nome que a Marina fala para o lead
-("sua conversa está agendada com Ana Ribeiro") precisa ser o da pessoa real que
-vai aparecer na reunião. Manter duas listas separadas garante que uma hora elas
-divergem.
+Por que importar em vez de cadastrar à mão: os consultores da Marina precisam
+ser as pessoas reais que vão aparecer nas reuniões. Manter duas listas separadas
+garante que uma hora elas divergem.
 
 O que este script NÃO faz: definir horários de atendimento. O juridico não tem
-noção de agenda — lá um agendamento é uma data que um humano digitou. Depois de
-importar, use `configurar_agenda.py`.
+noção de agenda — lá uma reunião é uma tarefa com data que alguém digitou.
+Depois de importar, use `configurar_agenda.py`.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from app.models import Consultor, RegraDisponibilidade
 logger = obter_logger("sync_consultores")
 
 
-async def main(filial_id: str | None) -> int:
+async def main() -> int:
     configurar_logging(destino="")  # script: log no terminal mesmo
     try:
         cliente = montar_cliente()
@@ -41,14 +40,12 @@ async def main(filial_id: str | None) -> int:
     criados = atualizados = 0
 
     try:
-        remotos = await cliente.listar_consultores(filial_id)
+        remotos = await cliente.listar_usuarios()
     finally:
         await cliente.fechar()
 
     if not remotos:
-        print("O juridico não devolveu nenhum consultor elegível.")
-        print("Confira se o usuário de serviço tem matriz e filial coerentes —")
-        print("sem isso o juridico devolve lista vazia SEM dar erro.")
+        print("O juridico não devolveu nenhum usuário ativo.")
         await encerrar()
         return 1
 
@@ -125,7 +122,5 @@ async def main(filial_id: str | None) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Importa consultores do juridico.")
-    parser.add_argument("--filial", default=None, help="filtra por filial do juridico")
-    argumentos = parser.parse_args()
-    sys.exit(executar(main(argumentos.filial)))
+    argparse.ArgumentParser(description="Importa consultores do juridico.").parse_args()
+    sys.exit(executar(main()))

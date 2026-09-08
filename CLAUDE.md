@@ -29,7 +29,7 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 345 testes
+pytest                                              # 343 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
@@ -53,7 +53,7 @@ projeto.
 
 ```bash
 python scripts/dump_lead.py --telefone "+5511987654321"   # cadastro + transcrição inteira
-python scripts/sync_consultores.py                        # importa consultores do juridico
+python scripts/sync_consultores.py                        # importa usuarios do juridico
 python scripts/configurar_agenda.py --listar              # define quem atende quando
 python scripts/flush_outbox.py [--falhados|--reprocessar] # força a entrega ao juridico
 python scripts/simular_webhook_twilio.py --texto "oi"     # webhook assinado, sem ngrok
@@ -201,9 +201,26 @@ Documentação: `docs/whatsapp/`.
 ### Integração com o `juridico`
 
 Desligada por padrão (`JURIDICO_ATIVO=false`), e com ela desligada a Marina roda
-sozinha. O backend `juridico` está disponível como diretório de trabalho
-adicional (`C:\xampp\htdocs\juridico`) — confira os endpoints lá antes de mudar
-o cliente.
+sozinha. O backend é o **`base-crm-juridico`** (Laravel 12 + Inertia), disponível
+como diretório de trabalho adicional em `C:\Dev\JURIDICO\base-crm-juridico` —
+confira as rotas em `routes/api.php` lá antes de mudar o cliente.
+
+Aquele backend **não tinha API nenhuma**: era só Inertia com sessão e CSRF. A
+superfície `/api/integracao/*` foi criada para esta integração, e é estreita de
+propósito — cinco rotas, autenticadas por token do Sanctum. O token pertence a um
+usuário de serviço lá dentro, e é dele que saem a empresa e as permissões.
+
+Não existe "lead" naquele CRM. O que existe é **contato + negociação** (a
+negociação *é* o lead) e **tarefa** (que exige `negociacao_id` — não há tarefa
+avulsa). A tradução é:
+
+| `TipoEnvio` | vira |
+|---|---|
+| `LEAD` | `POST /api/integracao/negociacoes` — reaproveita o contato pelo telefone ou cria um novo; a negociação nasce em `contato_feito` |
+| `QUALIFICACAO` | `POST .../negociacoes/{id}/observacoes` — vira `HistoricoObservacao` |
+| `AGENDAMENTO` | `POST .../negociacoes/{id}/tarefas` — tarefa do tipo `reuniao` |
+
+`leads.crm_lead_id` guarda o **id da negociação**.
 
 Três camadas, e o engine só conhece a primeira:
 
@@ -217,9 +234,14 @@ Três camadas, e o engine só conhece a primeira:
    reserva um lead virava três cadastros. Erro permanente queima as tentativas de
    uma vez, para o item sair da fila e virar algo que uma pessoa olha.
 3. `app/integrations/juridico/` — **tudo que é específico daquele backend**:
-   `cliente.py` (HTTP; login uma vez e refresh, porque o juridico bloqueia após
-   10 logins em 15 min), `mapeamento.py` (tradução pura, testável sem rede),
-   `entregador.py` (drena a fila) e `fabrica.py` (monta as peças pela config).
+   `cliente.py` (HTTP, token fixo — não há login nem renovação a administrar),
+   `mapeamento.py` (tradução pura, testável sem rede), `entregador.py` (drena a
+   fila) e `fabrica.py` (monta as peças pela config).
+
+   Em `cliente.py`, o cabeçalho **`Accept: application/json` não é cosmético**:
+   sem ele o Laravel trata a chamada como navegador, e um token inválido vira 302
+   para a tela de login enquanto um erro de validação vira redirecionamento. Os
+   dois seriam lidos como resposta definitiva e matariam o item na fila.
 
 Duas invariantes da entrega: a **ordem por lead** é respeitada (um agendamento
 não pode chegar antes de o lead existir lá; se o lead falha, os itens *dele*
@@ -234,18 +256,19 @@ terminal.
   `InterfaceError` antes de qualquer query. Todo entrypoint assíncrono (cli,
   scripts, alembic) usa `executar`; os testes usam o hook
   `pytest_asyncio_loop_factories` em `conftest.py` pelo mesmo motivo.
-- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 317) e
-  afirma que a reunião vai ao juridico por `POST /api/admin/leads/:id/agendamentos`
-  e que a Marina promete o nome do consultor ao lead. Os dois mudaram em
-  27/08/2026: hoje é `POST /api/admin/crm/tarefas`, a reunião fica **em aberto**
-  no nome do usuário de serviço, e nenhuma mensagem cita um consultor. Para regra
-  de negócio, a fonte atual é **`docs/SDR/marina-regras-de-negocio.md`**, não o
-  README.
-- **Papel do usuário de serviço no juridico.** O `.env.example` explica: a tela de
-  funcionários cria sempre como `DIRETOR`, o que serve (cria lead e tarefa, e não
-  entra no rodízio). O papel a evitar é `COMERCIAL` — nesse caso o juridico
-  atribui todo lead a quem criou. Matriz e filial coerentes são obrigatórias: sem
-  isso as listagens do juridico voltam **vazias, sem dar erro**.
+- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 343) e
+  descreve endpoints de um backend que não existe mais. A reunião fica **em
+  aberto** no nome do usuário de serviço e nenhuma mensagem cita um consultor.
+  Para regra de negócio, a fonte atual é **`docs/SDR/marina-regras-de-negocio.md`**,
+  não o README.
+- **Usuário de serviço no juridico.** Gere com
+  `php artisan integracao:usuario "Nome da Empresa"` lá; o comando cria um perfil
+  com só duas permissões (`comercial.negociacoes` e `comercial.tarefas`) e imprime
+  o token **uma única vez**. Evite dar `administrador_empresa` a ele: essa chave
+  faz `temPermissao` devolver `true` para tudo.
+- **A negociação e a reunião nascem no nome do usuário de serviço**, porque o
+  juridico exige responsável em toda tarefa — é assim que "em aberto" se
+  representa. Alguém do time precisa assumir depois; não há rodízio.
 - **Log em arquivo por padrão** (`LOG_ARQUIVO=marina.log`). Com a variável vazia o
   JSON do structlog se intercala com a conversa no terminal e deixa o atendimento
   ilegível.

@@ -52,13 +52,15 @@ class Configuracao(BaseSettings):
     #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
     #: da integracao existir. Ligar e mudar uma linha.
     juridico_ativo: bool = False
-    juridico_base_url: str = "http://localhost:3000"
-    juridico_login: str = ""
-    juridico_senha: str = ""
+    juridico_base_url: str = "http://127.0.0.1:8000"
+    #: Token de API emitido no juridico por `php artisan integracao:usuario`.
+    #: Ele carrega a empresa e as permissoes do usuario de servico, entao nao ha
+    #: nada mais a configurar aqui sobre escopo.
+    juridico_token: str = ""
     juridico_timeout_s: float = 15.0
-    #: Canal registrado no primeiro contato do juridico. Vira WHATSAPP quando o
-    #: adaptador de WhatsApp existir.
-    juridico_canal_contato: str = "WHATSAPP"
+    #: Canal por onde a conversa chegou. Vai escrito na observacao registrada no
+    #: CRM, ja que o cadastro de la nao tem campo proprio para isso.
+    juridico_canal_contato: str = "WhatsApp"
     outbox_max_tentativas: int = 5
 
     # Apresentacao

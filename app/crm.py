@@ -60,8 +60,17 @@ class CrmSinkOutbox:
     acontecer.
     """
 
-    def __init__(self, criar_sessao: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        criar_sessao: async_sessionmaker[AsyncSession],
+        relogio=None,
+    ) -> None:
         self._criar_sessao = criar_sessao
+        #: Sem relógio, a linha nasce com o `now()` do Postgres, que é o certo em
+        #: produção. Quem controla o tempo — os testes — precisa poder informá-lo:
+        #: senão o item nasce na hora real e uma drenagem com relógio congelado
+        #: nunca o enxerga como pendente.
+        self._relogio = relogio
 
     async def _enfileirar(self, tipo: TipoEnvio, payload: dict) -> None:
         lead_id = payload.get("lead_id")
@@ -72,6 +81,7 @@ class CrmSinkOutbox:
                     tipo,
                     payload,
                     lead_id=uuid.UUID(str(lead_id)) if lead_id else None,
+                    agora=self._relogio() if self._relogio else None,
                 )
                 await sessao.commit()
         except Exception as erro:  # noqa: BLE001 - a conversa nao pode cair por isso

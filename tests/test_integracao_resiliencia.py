@@ -69,32 +69,18 @@ def _juridico_morto(request: httpx.Request) -> httpx.Response:
 
 def _juridico_vivo(request: httpx.Request) -> httpx.Response:
     caminho = request.url.path
-    if caminho == "/api/auth/login":
-        return httpx.Response(
-            200,
-            json={
-                "token": "t",
-                "refreshToken": "r",
-                "accessTokenExpiresIn": 900,
-                # Id do proprio usuario de servico: a tarefa da reuniao nasce no
-                # nome dele, e e assim que "em aberto" e representado.
-                "id": "usuario-marina",
-            },
-        )
-    if caminho.endswith("/primeiro-contato"):
-        return httpx.Response(200, json={"id": "lead-ext"})
-    if caminho.endswith("/crm/tarefas"):
-        return httpx.Response(201, json={"id": "tarefa-ext"})
-    return httpx.Response(201, json={"id": "lead-ext"})
+    if caminho.endswith("/observacoes"):
+        return httpx.Response(201, json={"id": 100})
+    if caminho.endswith("/tarefas"):
+        return httpx.Response(201, json={"id": 200})
+    return httpx.Response(201, json={"id": 42})
 
 
 def _montar_motor(criar_sessao, handler, agora=AGORA):
     cliente = ClienteJuridico(
         base_url="https://juridico.exemplo",
-        login="marina",
-        senha="x",
+        token="token-de-teste",
         transport=_transporte(handler),
-        relogio=lambda: agora,
     )
     entregador = EntregadorJuridico(
         criar_sessao=criar_sessao,
@@ -106,7 +92,9 @@ def _montar_motor(criar_sessao, handler, agora=AGORA):
     motor = Engine(
         criar_sessao=criar_sessao,
         adaptador=ScriptedAdapter([InboundMessage(texto=t) for t in ROTEIRO]),
-        crm=CrmSinkOutbox(criar_sessao),
+        # O mesmo relogio do motor: sem isso o item nasce com a hora real do
+        # Postgres e a drenagem, congelada em AGORA, nao o veria como pendente.
+        crm=CrmSinkOutbox(criar_sessao, relogio=lambda: agora),
         entregador=entregador,
         relogio=lambda: agora,
     )
@@ -155,17 +143,14 @@ async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
     chamadas: list[str] = []
 
     def vivo_registrando(request):
-        if request.url.path != "/api/auth/login":
-            chamadas.append(request.url.path)
+        chamadas.append(request.url.path)
         return _juridico_vivo(request)
 
     depois = AGORA + timedelta(hours=1)
     cliente2 = ClienteJuridico(
         base_url="https://juridico.exemplo",
-        login="marina",
-        senha="x",
+        token="token-de-teste",
         transport=_transporte(vivo_registrando),
-        relogio=lambda: depois,
     )
     entregador = EntregadorJuridico(
         criar_sessao=criar_sessao_db, cliente=cliente2, relogio=lambda: depois
@@ -174,12 +159,12 @@ async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
     await cliente2.fechar()
 
     assert resumo["entregues"] == 3
-    assert chamadas[0].endswith("/api/admin/leads")
-    assert "primeiro-contato" in chamadas[1]
-    assert "crm/tarefas" in chamadas[2]
+    assert chamadas[0] == "/api/integracao/negociacoes"
+    assert chamadas[1] == "/api/integracao/negociacoes/42/observacoes"
+    assert chamadas[2] == "/api/integracao/negociacoes/42/tarefas"
 
     lead = (await sessao_db.execute(select(Lead))).scalar_one()
-    assert lead.crm_lead_id == "lead-ext"
+    assert lead.crm_lead_id == "42"
 
 
 @pytest.mark.asyncio
@@ -193,7 +178,7 @@ async def test_com_o_juridico_no_ar_tudo_chega_durante_a_conversa(
     await cliente.fechar()
 
     lead = (await sessao_db.execute(select(Lead))).scalar_one()
-    assert lead.crm_lead_id == "lead-ext"
+    assert lead.crm_lead_id == "42"
 
     pendentes = (
         (await sessao_db.execute(select(CrmOutbox).where(CrmOutbox.entregue_em.is_(None))))
@@ -207,15 +192,15 @@ async def test_com_o_juridico_no_ar_tudo_chega_durante_a_conversa(
 async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
     """A regra mudou em 27/08/2026: ninguem e escolhido.
 
-    A reuniao vira tarefa de CRM parada no nome do proprio robo, e quem tiver
-    disponibilidade assume. Atribuir um consultor aqui voltaria a prometer uma
-    pessoa que pode nao ser quem vai aparecer.
+    A reuniao vira tarefa parada no nome do proprio usuario de servico, e quem
+    tiver disponibilidade assume. Indicar um consultor aqui voltaria a prometer
+    uma pessoa que pode nao ser quem vai aparecer.
     """
     await _semear(sessao_db)
     corpos: list[dict] = []
 
     def registrando(request):
-        if request.url.path.endswith("/crm/tarefas"):
+        if request.url.path.endswith("/tarefas"):
             import json
 
             corpos.append(json.loads(request.read().decode()))
@@ -227,11 +212,11 @@ async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
 
     assert corpos
     tarefa = corpos[0]
-    assert tarefa["responsavelId"] == "usuario-marina"
-    assert "consultorId" not in tarefa
-    assert tarefa["tipo"] == "REUNIAO"
-    # Quem pegar a tarefa precisa saber com quem vai falar: a tarefa do juridico
-    # nao tem campo de lead, entao isso vai escrito.
+    # Quem recebe define o responsavel a partir do token: a Marina nao opina.
+    assert "responsavel_id" not in tarefa
+    assert "consultor_id" not in tarefa
+    assert tarefa["tipo"] == "reuniao"
+    # Quem pegar a tarefa precisa saber com quem vai falar.
     assert "Pedro Guerra" in tarefa["assunto"]
 
 
@@ -243,10 +228,10 @@ async def test_qualificacao_leva_o_que_nao_tem_campo_no_juridico(
     observacoes: list[str] = []
 
     def registrando(request):
-        if request.url.path.endswith("/primeiro-contato"):
+        if request.url.path.endswith("/observacoes"):
             import json
 
-            observacoes.append(json.loads(request.read().decode())["observacao"])
+            observacoes.append(json.loads(request.read().decode())["conteudo"])
         return _juridico_vivo(request)
 
     motor, cliente = _montar_motor(criar_sessao_db, registrando)
@@ -296,8 +281,7 @@ def test_cli_ligado_usa_a_fila():
         ScriptedAdapter([]),
         Configuracao(
             juridico_ativo=True,
-            juridico_login="marina",
-            juridico_senha="x",
+            juridico_token="token-de-teste",
             juridico_base_url="https://juridico.exemplo",
         ),
     )
@@ -307,11 +291,11 @@ def test_cli_ligado_usa_a_fila():
 
 
 def test_cli_ligado_sem_credencial_cai_no_noop():
-    # Marcar ativo=true e esquecer login/senha nao pode virar erro no meio de um
+    # Marcar ativo=true e esquecer o token nao pode virar erro no meio de um
     # atendimento: vira integracao desligada, e a Marina segue funcionando.
     #
-    # As credenciais vazias sao passadas EXPLICITAMENTE: sem isso o teste lia o
-    # .env da maquina e passava ou falhava conforme quem estivesse rodando.
+    # O token vazio e passado EXPLICITAMENTE: sem isso o teste lia o .env da
+    # maquina e passava ou falhava conforme quem estivesse rodando.
     from app.cli import montar_motor
     from app.config import Configuracao
     from app.crm import CrmSinkNoop
@@ -319,7 +303,7 @@ def test_cli_ligado_sem_credencial_cai_no_noop():
     motor, cliente = montar_motor(
         _sessionmaker_de_mentira(),
         ScriptedAdapter([]),
-        Configuracao(juridico_ativo=True, juridico_login="", juridico_senha=""),
+        Configuracao(juridico_ativo=True, juridico_token=""),
     )
     assert cliente is None
     assert isinstance(motor._crm, CrmSinkNoop)

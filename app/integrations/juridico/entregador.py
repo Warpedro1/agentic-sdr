@@ -16,15 +16,10 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.integrations.juridico.cliente import (
-    ClienteJuridico,
-    ErroJuridico,
-    LeadDuplicado,
-)
+from app.integrations.juridico.cliente import ClienteJuridico, ErroJuridico
 from app.integrations.juridico.mapeamento import (
+    payload_negociacao,
     payload_tarefa,
-    payload_lead,
-    telefone_para_juridico,
     texto_qualificacao,
 )
 from app.logging import obter_logger
@@ -129,30 +124,23 @@ class EntregadorJuridico:
         return await sessao.get(Lead, item.lead_id)
 
     async def _entregar_lead(self, sessao: AsyncSession, item: CrmOutbox) -> None:
+        """Cria a negociação do lead. `crm_lead_id` guarda o id dela.
+
+        Duas defesas contra duplicata, e elas cobrem coisas diferentes: aqui, a
+        guarda local impede reenviar o que já foi; do outro lado, a
+        `referencia_externa` cobre a janela entre o commit remoto e o local — se
+        a resposta se perder no caminho, o juridico reconhece o reenvio e
+        devolve a mesma negociação em vez de criar outra.
+        """
         lead = await self._lead_local(sessao, item)
         if lead is None:
             raise ErroJuridico("lead local nao encontrado", status=404)
         if lead.crm_lead_id:
             return  # ja enviado antes; entregar de novo criaria duplicata
 
-        payload = item.payload or {}
-        try:
-            crm_id = await self._cliente.criar_lead(payload_lead(payload))
-        except LeadDuplicado:
-            # O juridico ja conhece essa pessoa. Isso NAO e falha: e o caminho
-            # normal de quem ja tinha cadastro la. Ele nao devolve o registro,
-            # entao vamos buscar pelo telefone.
-            telefone = telefone_para_juridico(payload.get("telefone_e164"))
-            crm_id = await self._cliente.buscar_lead_por_telefone(telefone)
-            if not crm_id:
-                raise ErroJuridico(
-                    "juridico recusou por duplicidade mas o lead nao foi encontrado "
-                    "pelo telefone (pode estar cadastrado so com CPF ou e-mail)",
-                    status=409,
-                ) from None
-            logger.info("crm_lead_ja_existia", crm_lead_id=crm_id)
-
-        lead.crm_lead_id = crm_id
+        lead.crm_lead_id = await self._cliente.criar_negociacao(
+            payload_negociacao(item.payload or {}, canal=self._canal)
+        )
         await sessao.flush()
 
     async def _entregar_qualificacao(
@@ -161,32 +149,25 @@ class EntregadorJuridico:
         lead = await self._lead_local(sessao, item)
         if lead is None or not lead.crm_lead_id:
             raise LeadAindaNaoEnviado()
-        await self._cliente.registrar_primeiro_contato(
+        await self._cliente.registrar_observacao(
             lead.crm_lead_id,
-            texto_qualificacao(item.payload or {}),
-            canal=self._canal,
+            texto_qualificacao(item.payload or {}, canal=self._canal),
         )
 
     async def _entregar_agendamento(
         self, sessao: AsyncSession, item: CrmOutbox
     ) -> None:
-        """A reunião vai como TAREFA de CRM em aberto, não como agendamento.
+        """A reunião vai como TAREFA em aberto, presa à negociação do lead.
 
-        Depende do lead já ter sido enviado só para que o texto da tarefa possa
-        citar o cadastro — quem pegar precisa conseguir chegar no lead.
+        Depende da negociação existir — não só pelo texto: a tarefa é criada
+        *dentro* dela, então sem o id sequer existe endereço para onde enviar.
         """
         lead = await self._lead_local(sessao, item)
         if lead is None or not lead.crm_lead_id:
             raise LeadAindaNaoEnviado()
 
-        responsavel = await self._cliente.usuario_id()
-        if not responsavel:
-            # Sem saber quem é o próprio usuário de serviço não há como criar a
-            # tarefa: o juridico exige responsável. É temporário — na próxima
-            # tentativa o login já terá trazido o id.
-            raise ErroJuridico("usuário de serviço do juridico desconhecido", status=503)
-
         await self._cliente.criar_tarefa(
+            lead.crm_lead_id,
             payload_tarefa(
                 item.payload or {},
                 lead={
@@ -198,7 +179,5 @@ class EntregadorJuridico:
                     "tipo_contrato": lead.tipo_contrato,
                     "possui_contrato": lead.possui_contrato,
                 },
-                responsavel_id=responsavel,
-                crm_lead_id=lead.crm_lead_id,
-            )
+            ),
         )

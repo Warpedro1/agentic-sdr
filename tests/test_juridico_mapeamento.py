@@ -4,41 +4,44 @@ import pytest
 
 from app.enums import Fonte, TipoContrato
 from app.integrations.juridico.mapeamento import (
-    ORIGENS_JURIDICO,
-    origem_lead,
-    payload_lead,
+    FONTES_CRM,
+    MAX_ASSUNTO,
+    fonte_crm,
+    payload_negociacao,
     payload_tarefa,
-    telefone_para_juridico,
+    telefone_para_crm,
     texto_qualificacao,
 )
 
 
 @pytest.mark.parametrize("fonte", [f.value for f in Fonte])
-def test_toda_fonte_vira_origem_que_o_juridico_aceita(fonte):
-    # O juridico devolve 400 para qualquer origem fora da lista dele. Nenhuma
-    # fonte da Marina pode escapar do mapa.
-    assert origem_lead(fonte) in ORIGENS_JURIDICO
+def test_toda_fonte_vira_valor_que_o_juridico_aceita(fonte):
+    # O juridico recusa qualquer fonte fora da lista dele. Nenhuma fonte da
+    # Marina pode escapar do mapa.
+    assert fonte_crm(fonte) in FONTES_CRM
 
 
 @pytest.mark.parametrize(
     "fonte,esperado",
     [
-        (Fonte.ANUNCIO.value, "INSTAGRAM_META_ADS"),
-        (Fonte.GOOGLE.value, "GOOGLE_ADS"),
-        (Fonte.INDICACAO.value, "INDICACAO"),
-        (Fonte.WHATSAPP.value, "INDICACAO"),
-        (Fonte.LINKEDIN.value, "INDICACAO"),
+        (Fonte.GOOGLE.value, "buscadores"),
+        (Fonte.INDICACAO.value, "indicacao_cliente"),
+        (Fonte.EMAIL.value, "contato_email"),
+        (Fonte.ANUNCIO.value, "redes_sociais"),
+        (Fonte.LINKEDIN.value, "redes_sociais"),
+        # Ganho em relação ao CRM antigo, que não tinha nada disso.
+        (Fonte.WHATSAPP.value, "contato_telefone"),
     ],
 )
-def test_mapa_de_origem(fonte, esperado):
-    assert origem_lead(fonte) == esperado
+def test_mapa_de_fonte(fonte, esperado):
+    assert fonte_crm(fonte) == esperado
 
 
 def test_fonte_desconhecida_nao_derruba_o_envio():
     # Se a Marina passar a coletar uma fonte nova e ninguem atualizar o mapa, o
     # lead ainda tem que chegar ao juridico.
-    assert origem_lead("tiktok") in ORIGENS_JURIDICO
-    assert origem_lead(None) in ORIGENS_JURIDICO
+    assert fonte_crm("tiktok") in FONTES_CRM
+    assert fonte_crm(None) in FONTES_CRM
 
 
 @pytest.mark.parametrize(
@@ -51,7 +54,7 @@ def test_fonte_desconhecida_nao_derruba_o_envio():
     ],
 )
 def test_telefone_perde_o_codigo_do_pais(entrada, esperado):
-    assert telefone_para_juridico(entrada) == esperado
+    assert telefone_para_crm(entrada) == esperado
 
 
 # --- texto da qualificacao --------------------------------------------------
@@ -65,112 +68,117 @@ def test_qualificacao_leva_o_que_nao_tem_campo_no_juridico():
             "fonte": Fonte.INDICACAO.value,
         }
     )
-    assert "consignado" in texto
-    assert "Tem o contrato em mãos" in texto
+    assert "empréstimo consignado" in texto
+    assert "Tem o contrato em mãos." in texto
+    assert "Origem: indicação." in texto
 
 
 def test_qualificacao_avisa_quando_nao_tem_o_contrato():
     texto = texto_qualificacao({"possui_contrato": False})
-    assert "NÃO tem o contrato" in texto
+    assert "NÃO tem o contrato em mãos" in texto
     assert "segunda via" in texto
 
 
-def test_qualificacao_preserva_a_origem_que_o_juridico_nao_representa():
-    # WhatsApp vira INDICACAO no campo. Se o texto tambem omitisse, a informacao
-    # sumiria — e o consultor perderia o canal de entrada do lead.
-    texto = texto_qualificacao({"fonte": Fonte.WHATSAPP.value})
-    assert "WhatsApp" in texto
-    assert "INDICACAO" in texto
+def test_qualificacao_registra_a_origem_real_quando_a_traducao_perde():
+    # LinkedIn vira "redes sociais" no CRM; a origem verdadeira nao pode sumir.
+    texto = texto_qualificacao({"fonte": Fonte.LINKEDIN.value})
+    assert "Origem real: LinkedIn" in texto
+    assert "redes_sociais" in texto
 
 
-def test_qualificacao_nao_repete_numero_de_menu():
-    texto = texto_qualificacao({"fonte": Fonte.INDICACAO.value, "fonte_raw": "5"})
-    assert 'Disse: "5"' not in texto
+def test_qualificacao_inclui_o_canal_quando_informado():
+    texto = texto_qualificacao({"fonte": Fonte.WHATSAPP.value}, canal="WhatsApp")
+    assert "Primeiro contato por WhatsApp." in texto
 
 
-def test_qualificacao_guarda_o_que_a_pessoa_escreveu():
-    texto = texto_qualificacao(
-        {"fonte": Fonte.INDICACAO.value, "fonte_raw": "um amigo me indicou"}
+def test_qualificacao_ignora_resposta_de_menu():
+    # "3" e o numero que a pessoa digitou no menu, nao uma frase dela.
+    assert "Disse:" not in texto_qualificacao({"fonte_raw": "3"})
+    assert 'Disse: "vi no jornal".' in texto_qualificacao({"fonte_raw": "vi no jornal"})
+
+
+# --- payload da negociacao --------------------------------------------------
+
+
+def test_payload_da_negociacao_leva_a_referencia_externa():
+    payload = payload_negociacao(
+        {
+            "lead_id": "abc-123",
+            "nome": "Pedro Guerra",
+            "telefone_e164": "+5511987654321",
+            "email": "pedro@exemplo.com.br",
+            "fonte": Fonte.INDICACAO.value,
+        }
     )
-    assert "um amigo me indicou" in texto
+    assert payload["referencia_externa"] == "abc-123"
+    assert payload["nome"] == "Pedro Guerra"
+    assert payload["telefone"] == "11987654321"
+    assert payload["fonte"] == "indicacao_cliente"
+    assert payload["email"] == "pedro@exemplo.com.br"
+    # Quem recebe decide o responsavel a partir do token.
+    assert "responsavel_id" not in payload
+    assert "usuario_id" not in payload
 
 
-def test_qualificacao_com_lead_vazio_nao_quebra():
-    assert texto_qualificacao({}).strip()
+def test_payload_da_negociacao_omite_email_vazio():
+    # Mandar string vazia seria recusado pela validacao de e-mail do juridico.
+    assert "email" not in payload_negociacao({"lead_id": "x", "email": ""})
+    assert "email" not in payload_negociacao({"lead_id": "x"})
 
 
-# --- payloads ---------------------------------------------------------------
+def test_payload_da_negociacao_sobrevive_a_lead_sem_nome():
+    assert payload_negociacao({"lead_id": "x"})["nome"] == "Lead sem nome"
 
 
-def test_payload_lead_nao_manda_consultor():
-    # Sem consultorId, o juridico aplica o rodizio dele. A Marina decide QUANDO
-    # e a reuniao; o juridico decide de QUEM e o lead.
-    corpo = payload_lead(
-        {"nome": "Pedro Guerra", "telefone_e164": "+5511987654321", "fonte": "google"}
-    )
-    assert "consultorId" not in corpo
-    assert corpo["telefoneCelular"] == "11987654321"
-    assert corpo["origemLead"] == "GOOGLE_ADS"
-    assert corpo["campanha"] == "MARINA"
+# --- payload da tarefa ------------------------------------------------------
 
 
-def test_payload_lead_sem_nome_nao_manda_vazio():
-    # O juridico devolve 400 se nomeCompleto for vazio.
-    assert payload_lead({})["nomeCompleto"].strip()
+def _agendamento():
+    return {"data_iso": "2026-09-02", "hora": "14:00"}
 
 
-# --- a reuniao vai como tarefa EM ABERTO ------------------------------------
-
-SLOT = {"data_iso": "2026-09-02", "hora": "14:00"}
-LEAD = {
-    "nome": "Pedro Guerra",
-    "telefone_e164": "+5511987654321",
-    "tipo_contrato": TipoContrato.CONSIGNADO.value,
-    "possui_contrato": True,
-}
-
-
-def test_tarefa_nasce_no_nome_do_robo():
-    # O juridico exige responsavel em toda tarefa. "Em aberto" e representado
-    # por uma tarefa parada no proprio usuario de servico, ate alguem pegar.
-    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="usuario-marina")
-    assert corpo["responsavelId"] == "usuario-marina"
+def _lead():
+    return {
+        "nome": "Pedro Guerra",
+        "telefone_e164": "+5511987654321",
+        "email": "pedro@exemplo.com.br",
+        "tipo_contrato": TipoContrato.CONSIGNADO.value,
+        "possui_contrato": True,
+        "fonte": Fonte.INDICACAO.value,
+    }
 
 
-def test_tarefa_nunca_atribui_consultor():
-    # A regra mudou em 27/08/2026: ninguem e escolhido, nenhum nome e prometido.
-    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="usuario-marina")
-    assert "consultorId" not in corpo
+def test_tarefa_junta_data_e_hora_no_formato_do_juridico():
+    payload = payload_tarefa(_agendamento(), _lead())
+    assert payload["agendada_para"] == "2026-09-02 14:00:00"
+    assert payload["tipo"] == "reuniao"
 
 
-def test_tarefa_aparece_no_calendario_como_reuniao():
-    # So os tipos da lista do juridico sao aceitos; qualquer outro devolve 400.
-    assert payload_tarefa(SLOT, LEAD, responsavel_id="x")["tipo"] == "REUNIAO"
+def test_tarefa_nao_indica_responsavel():
+    # A reuniao nasce em aberto: quem recebe usa o usuario do token, e trocar o
+    # dono e uma acao de quem for atender.
+    payload = payload_tarefa(_agendamento(), _lead())
+    assert "responsavel_id" not in payload
+    assert "responsavelId" not in payload
 
 
-def test_tarefa_leva_data_e_hora_locais():
-    # O juridico junta data + horario como hora local dele. Mandar o dia em UTC
-    # erraria a data nas reunioes da noite.
-    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="x")
-    assert corpo["data"] == "2026-09-02"
-    assert corpo["horario"] == "14:00"
+def test_tarefa_identifica_o_lead_no_assunto_e_na_observacao():
+    payload = payload_tarefa(_agendamento(), _lead())
+    assert "Pedro Guerra" in payload["assunto"]
+    assert "+5511987654321" in payload["assunto"]
+    assert "empréstimo consignado" in payload["observacao"]
+    assert "assuma como responsável" in payload["observacao"]
 
 
-def test_tarefa_diz_quem_e_o_lead():
-    # A tarefa do juridico nao tem campo de lead: sem isto escrito, quem pegasse
-    # veria "Sem vinculo" no calendario e nao teria com quem falar.
-    corpo = payload_tarefa(SLOT, LEAD, responsavel_id="x", crm_lead_id="lead-ext")
-    assert "Pedro Guerra" in corpo["assunto"]
-    assert "+5511987654321" in corpo["descricao"]
-    assert "lead-ext" in corpo["descricao"]
-    assert "consignado" in corpo["descricao"]
+def test_tarefa_trunca_assunto_no_limite_da_coluna():
+    # A coluna aceita 180 chars; estourar devolve 422, que e erro permanente e
+    # mataria o agendamento na fila por causa de um nome comprido.
+    payload = payload_tarefa(_agendamento(), {**_lead(), "nome": "N" * 400})
+    assert len(payload["assunto"]) == MAX_ASSUNTO
 
 
 def test_tarefa_usa_email_quando_nao_ha_telefone():
-    # Um contato basta, e o lead pode ter chegado so com e-mail.
-    corpo = payload_tarefa(
-        SLOT,
-        {"nome": "Ana", "email": "ana@exemplo.com"},
-        responsavel_id="x",
+    payload = payload_tarefa(
+        _agendamento(), {**_lead(), "telefone_e164": None}
     )
-    assert "ana@exemplo.com" in corpo["assunto"]
+    assert "pedro@exemplo.com.br" in payload["assunto"]
