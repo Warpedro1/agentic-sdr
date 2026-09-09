@@ -51,12 +51,14 @@ class Configuracao(BaseSettings):
     # CRM externo (hoje o `juridico`)
     #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
     #: da integracao existir. Ligar e mudar uma linha.
+    #: Chave GERAL: `false` desliga a integracao de todas as empresas de uma vez.
+    #: E o desligamento de emergencia, nao o interruptor do dia a dia — quem liga e
+    #: desliga uma empresa e o cadastro dela (`scripts/cadastrar_empresa.py`).
+    #:
+    #: O endereco e a credencial NAO moram mais aqui: cada instalacao do juridico e
+    #: uma empresa, e sao dela. Uma credencial global seria a porta dos fundos para
+    #: entregar o dado de um escritorio com a credencial de outro.
     juridico_ativo: bool = False
-    juridico_base_url: str = "http://127.0.0.1:8000"
-    #: Token de API emitido no juridico por `php artisan integracao:usuario`.
-    #: Ele carrega a empresa e as permissoes do usuario de servico, entao nao ha
-    #: nada mais a configurar aqui sobre escopo.
-    juridico_token: str = ""
     juridico_timeout_s: float = 15.0
     #: Canal por onde a conversa chegou. Vai escrito na observacao registrada no
     #: CRM, ja que o cadastro de la nao tem campo proprio para isso.

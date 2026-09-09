@@ -19,8 +19,9 @@ import sys
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.aio import executar
+from app.aio import executar, forcar_utf8
 from app.db import encerrar, obter_engine
+from app.empresas import EmpresaDesconhecida, resolver_argumento
 from app.integrations.juridico.fabrica import IntegracaoDesligada, montar_cliente
 from app.logging import configurar_logging, obter_logger
 from app.models import Consultor, RegraDisponibilidade
@@ -28,24 +29,44 @@ from app.models import Consultor, RegraDisponibilidade
 logger = obter_logger("sync_consultores")
 
 
+def montar_argumentos() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--empresa",
+        help="slug da empresa; dispensável quando só há uma cadastrada",
+    )
+    return parser.parse_args()
+
+
 async def main() -> int:
+    forcar_utf8()
+    args = montar_argumentos()
     configurar_logging(destino="")  # script: log no terminal mesmo
-    try:
-        cliente = montar_cliente()
-    except IntegracaoDesligada as erro:
-        print(f"Integração desligada: {erro}")
-        return 1
 
     criar_sessao = async_sessionmaker(obter_engine(), expire_on_commit=False)
-    criados = atualizados = 0
+    async with criar_sessao() as sessao:
+        try:
+            empresa = await resolver_argumento(sessao, args.empresa)
+        except EmpresaDesconhecida as erro:
+            print(erro)
+            await encerrar()
+            return 2
 
+    try:
+        cliente = montar_cliente(empresa)
+    except IntegracaoDesligada as erro:
+        print(f"[{empresa.slug}] integração desligada: {erro}")
+        await encerrar()
+        return 1
+
+    criados = atualizados = 0
     try:
         remotos = await cliente.listar_usuarios()
     finally:
         await cliente.fechar()
 
     if not remotos:
-        print("O juridico não devolveu nenhum usuário ativo.")
+        print(f"O juridico de {empresa.slug} não devolveu nenhum usuário ativo.")
         await encerrar()
         return 1
 
@@ -59,22 +80,31 @@ async def main() -> int:
 
             local = (
                 await sessao.execute(
-                    select(Consultor).where(Consultor.crm_usuario_id == crm_id)
+                    select(Consultor).where(
+                        Consultor.empresa_id == empresa.id,
+                        Consultor.crm_usuario_id == crm_id,
+                    )
                 )
             ).scalar_one_or_none()
 
             if local is None and email:
                 # Consultor que já existia na Marina antes da integração: liga
-                # pelo e-mail em vez de criar um duplicado.
+                # pelo e-mail em vez de criar um duplicado. DENTRO da empresa: a
+                # mesma pessoa pode atender dois escritórios, e casar por e-mail
+                # sem escopo sequestraria o consultor do outro.
                 local = (
                     await sessao.execute(
-                        select(Consultor).where(Consultor.email == email)
+                        select(Consultor).where(
+                            Consultor.empresa_id == empresa.id,
+                            Consultor.email == email,
+                        )
                     )
                 ).scalar_one_or_none()
 
             if local is None:
                 sessao.add(
                     Consultor(
+                        empresa_id=empresa.id,
                         nome=nome,
                         email=email or f"{crm_id}@sem-email.local",
                         ativo=True,
@@ -100,7 +130,11 @@ async def main() -> int:
                         RegraDisponibilidade,
                         RegraDisponibilidade.consultor_id == Consultor.id,
                     )
-                    .where(Consultor.ativo.is_(True), RegraDisponibilidade.id.is_(None))
+                    .where(
+                        Consultor.empresa_id == empresa.id,
+                        Consultor.ativo.is_(True),
+                        RegraDisponibilidade.id.is_(None),
+                    )
                 )
             )
             .scalars()

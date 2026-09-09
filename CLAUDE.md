@@ -16,7 +16,7 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"    # Linux/macOS: .venv/bin/python
 
 docker compose up -d          # Postgres 16 na 5432 (marina/marina/marina)
-alembic upgrade head          # head atual: 0006_empresas
+alembic upgrade head          # head atual: 0007_escopo_por_empresa
 python scripts/cadastrar_empresa.py --listar   # quem a Marina atende hoje
 python scripts/seed.py        # 3 consultores + agenda seg-sex 9h-18h
 
@@ -31,7 +31,7 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 363 testes
+pytest                                              # 374 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
@@ -52,6 +52,10 @@ gate. Os `# noqa: BLE001` no código são resquício de um ruff que não está n
 projeto.
 
 ### Scripts operacionais
+
+Todos trabalham **por empresa**: com uma cadastrada ela é assumida, com mais de uma
+eles exigem `--empresa <slug>` e recusam adivinhar (`app.empresas.resolver_argumento`).
+Escolher errado aqui escreveria no CRM do escritório errado.
 
 ```bash
 python scripts/dump_lead.py --telefone "+5511987654321"   # cadastro + transcrição inteira
@@ -74,12 +78,21 @@ adaptador de canal  →  machine.handle()  →  engine
 não toca banco, rede, disco nem relógio. Devolve `Transicao(novo_estado,
 lead_updates, ctx_updates, mensagens, efeitos)`; quem executa é o `engine`.
 
-`tests/test_machine_pura.py` é a cerca que sustenta isso: analisa a AST de
-`app/machine.py` e falha se aparecer import de `sqlalchemy`, `os`, `pathlib`,
-`zoneinfo`, `httpx`, `random` ou dos módulos de I/O do próprio app; se alguém
-chamar `datetime.now`, `uuid4`, `open`, `input` ou `print`; e ainda importa
-`app.machine` num subprocesso para pegar o stack de banco puxado **por tabela**,
-via cadeia de imports. Ao mexer em `machine.py`, rode esse teste.
+`tests/test_machine_pura.py` é a cerca que sustenta isso, e ela usa **dois
+critérios opostos, cada um do lado em que serve**:
+
+- **Bibliotecas: lista de proibidos** (`sqlalchemy`, `os`, `pathlib`, `httpx`,
+  `fastapi`…). Terceiros e biblioteca padrão não nascem aqui dentro, então
+  enumerar não envelhece.
+- **Módulos do projeto: lista de AUTORIZADOS** — hoje `channels.base`, `enums`,
+  `guards`, `parsers` e `templates`. Módulo interno novo é recusado por padrão.
+  A lista de proibidos falhou em silêncio uma vez: `app/segredos.py` nasceu depois
+  dela, lê ambiente e disco, e a máquina podia importá-lo sem nenhum teste
+  reclamar. Ampliar a camada pura passa a ser decisão explícita.
+
+Também falha se alguém chamar `datetime.now`, `uuid4`, `open`, `input` ou `print`;
+e importa `app.machine` num subprocesso para pegar banco, rede ou web puxados
+**por tabela**, via cadeia de imports. Ao mexer em `machine.py`, rode esse teste.
 
 Consequência prática: tudo que exigiria I/O chega pronto no `ctx` —
 `ctx["agora"]` (relógio), `ctx["politicas"]` (limites, que viriam do `.env`),
@@ -129,9 +142,33 @@ empresa**, criado sob demanda e trocado quando o endereço ou a credencial mudam
 `Engine` exige `empresa` sem valor padrão: "qualquer empresa" é o defeito que essa
 separação existe para eliminar.
 
-**Escopo ainda pendente.** Hoje o dado *nasce* rotulado, mas as consultas — dedup de
-lead, opt-out, consultores, drenagem da fila — ainda são globais. Duas empresas
-ainda colidiriam. Ver `docs/` e o plano das fases 3 e 4.
+**O isolamento é do banco, não só do código.** O `empresa_id` é obrigatório nas
+seis tabelas alcançáveis sem um pai já escopado (`leads`, `conversas`,
+`consultores`, `regras_disponibilidade`, `opt_outs`, `crm_outbox`);
+`agendamentos`, `mensagens` e `documentos` ficam de fora porque sempre chegam por
+`consultor_id`, `conversa_id` ou `lead_id`.
+
+As travas viraram por empresa: telefone único **por empresa**, uma conversa aberta
+por número **por empresa**, e-mail de consultor único **por empresa**. Todas ficaram
+mais frouxas do que eram — o único aperto foi a obrigatoriedade.
+
+Dois pontos merecem atenção ao mexer aqui:
+
+- **`outbox.pendentes` exige `empresa_id`, e não tem valor padrão.** Ela RESERVA as
+  linhas que lê (`FOR UPDATE SKIP LOCKED`): sem o filtro, o entregador de uma
+  empresa consome os itens da outra e os posta no CRM errado. Era o vazamento mais
+  grave que existia.
+- **`regras_disponibilidade` tem chave estrangeira COMPOSTA** para `consultores
+  (id, empresa_id)`. O `empresa_id` ali é desnormalização, e sem a chave composta
+  seria um segundo lugar onde a verdade pode divergir — divergência em agenda vira
+  horário oferecido pela empresa errada.
+
+**A configuração não tem mais endereço nem credencial do jurídico.** Só sobrou
+`JURIDICO_ATIVO`, como desligamento de emergência de todas as empresas. Isso é
+proposital: `integracao_ativa` **recusa** receber a `Configuracao` no lugar de uma
+`EmpresaCtx`, porque as duas têm por coincidência os mesmos nomes de atributo e o
+erro já passou em silêncio uma vez, fazendo um script voltar a usar a credencial
+global.
 
 ### Duas entradas no engine: `rodar()` e `atender()`
 
@@ -208,17 +245,23 @@ do menu, e ponto.
 ### Agendamento: capacidade, não atribuição
 
 A reunião **nasce sem dono** — vai ao CRM como tarefa em aberto, e a copy nunca
-promete o nome de um consultor. `app/routing.py` ordena por **carga** (menos
+promete o nome de um consultor. `app/agenda/carga.py` ordena por **carga** (menos
 agendamentos futuros; empate por quem está parado há mais tempo) apenas para
-decidir se o horário cabe; `app/booking.py` consome a vaga de um consultor
+decidir se o horário cabe; `app/agenda/reserva.py` consome a vaga de um consultor
 específico.
 
 Duas defesas contra dupla marcação, não uma: `SELECT ... FOR UPDATE` no consultor
 com revalidação dentro da trava, **mais** o índice parcial
 `UNIQUE (consultor_id, inicio_utc) WHERE status = 'agendado'`. Quando a segunda
 dispara, **isso não é erro** — é o caminho normal do segundo lead, que recebe
-`slot_perdido`. Tudo atrás da interface `CalendarProvider` (`app/calendar.py`),
+`slot_perdido`. Tudo atrás da interface `CalendarProvider` (`app/agenda/calendario.py`),
 para o Google Calendar entrar sem tocar na máquina de estados.
+
+**`app/agenda/` é pacote pelo mesmo critério de `channels/` e `storage/`:** é onde
+se espera uma segunda implementação. Quatro módulos que só conversam entre si —
+`disponibilidade` (quais horários existem), `carga` (quem está mais livre),
+`calendario` (o que já está ocupado) e `reserva` (a gravação, com as duas defesas
+contra dupla marcação).
 
 ### WhatsApp pela Twilio
 
@@ -234,7 +277,7 @@ cabeçalhos — o endereço do ngrok muda a cada reinício, e esquecer de atuali
 variável faz **toda** chamada virar 403.
 
 `scripts/simular_webhook_twilio.py` exercita isso sem ngrok e sem conta.
-Documentação: `docs/whatsapp/`.
+Documentação: `docs/whatsapp/`; o multiempresa está em `docs/empresas/`.
 
 ### Integração com o `juridico`
 

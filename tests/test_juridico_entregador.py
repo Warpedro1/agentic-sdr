@@ -34,7 +34,7 @@ def transporte(**rotas):
     return httpx.MockTransport(handler)
 
 
-def montar(criar_sessao, transport, max_tentativas=5, agora=AGORA):
+def montar(criar_sessao, empresa, transport, max_tentativas=5, agora=AGORA):
     cliente = ClienteJuridico(
         base_url="https://juridico.exemplo", token="token-de-teste", transport=transport
     )
@@ -42,6 +42,7 @@ def montar(criar_sessao, transport, max_tentativas=5, agora=AGORA):
         EntregadorJuridico(
             criar_sessao=criar_sessao,
             cliente=cliente,
+            empresa_id=empresa.id,
             max_tentativas=max_tentativas,
             relogio=lambda: agora,
             backoff=Backoff(base_segundos=30, teto_segundos=1800),
@@ -110,7 +111,7 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
     )
     await sessao_db.commit()
 
-    entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
+    entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: rota}))
     resumo = await entregador.drenar()
     await cliente.fechar()
 
@@ -141,7 +142,7 @@ async def test_lead_ja_enviado_nao_e_enviado_de_novo(sessao_db, criar_sessao_db,
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
+    entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: rota}))
     await entregador.drenar()
     await cliente.fechar()
 
@@ -163,8 +164,7 @@ async def test_negociacao_ja_conhecida_conta_como_entrega(sessao_db, criar_sessa
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(
-        criar_sessao_db,
+    entregador, cliente = montar(criar_sessao_db, empresa,
         transporte(**{NEGOCIACOES: httpx.Response(200, json={"id": 7, "criada": False})}),
     )
     resumo = await entregador.drenar()
@@ -194,7 +194,7 @@ async def test_falha_no_lead_segura_os_itens_seguintes_dele(sessao_db, criar_ses
     await _enfileirar(sessao_db, empresa, TipoEnvio.AGENDAMENTO, dados, lead.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
+    entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: rota}))
     resumo = await entregador.drenar()
     await cliente.fechar()
 
@@ -220,7 +220,7 @@ async def test_um_lead_travado_nao_trava_a_fila_de_outro(sessao_db, criar_sessao
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(bom), bom.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
+    entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: rota}))
     resumo = await entregador.drenar()
     await cliente.fechar()
 
@@ -236,8 +236,7 @@ async def test_erro_temporario_agenda_nova_tentativa(sessao_db, criar_sessao_db,
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(
-        criar_sessao_db, transporte(**{NEGOCIACOES: httpx.Response(503, text="off")})
+    entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: httpx.Response(503, text="off")})
     )
     await entregador.drenar()
     await cliente.fechar()
@@ -257,8 +256,7 @@ async def test_erro_permanente_nao_fica_tentando_para_sempre(sessao_db, criar_se
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
-    entregador, cliente = montar(
-        criar_sessao_db,
+    entregador, cliente = montar(criar_sessao_db, empresa,
         transporte(
             **{
                 NEGOCIACOES: httpx.Response(
@@ -288,8 +286,7 @@ async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sess
     await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
-    fora, cliente = montar(
-        criar_sessao_db, transporte(**{NEGOCIACOES: httpx.Response(503, text="off")})
+    fora, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: httpx.Response(503, text="off")})
     )
     await fora.drenar()
     await cliente.fechar()
@@ -298,8 +295,7 @@ async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sess
 
     # Passa o tempo do backoff e o juridico volta.
     depois = AGORA + timedelta(minutes=10)
-    voltou, cliente2 = montar(
-        criar_sessao_db,
+    voltou, cliente2 = montar(criar_sessao_db, empresa,
         transporte(**{NEGOCIACOES: httpx.Response(201, json={"id": 5})}),
         agora=depois,
     )
@@ -335,7 +331,7 @@ async def test_drenagens_simultaneas_nao_duplicam_o_lead(sessao_db, criar_sessao
     drenagens = []
     clientes = []
     for _ in range(3):
-        entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: conta}))
+        entregador, cliente = montar(criar_sessao_db, empresa, transporte(**{NEGOCIACOES: conta}))
         drenagens.append(entregador.drenar())
         clientes.append(cliente)
 

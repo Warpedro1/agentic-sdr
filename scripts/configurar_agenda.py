@@ -19,8 +19,9 @@ from datetime import time
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.aio import executar
+from app.aio import executar, forcar_utf8
 from app.db import encerrar, obter_engine
+from app.empresas import EmpresaDesconhecida, resolver_argumento
 from app.logging import configurar_logging
 from app.models import Consultor, RegraDisponibilidade
 
@@ -40,13 +41,20 @@ def parse_dias(valor: str) -> list[int]:
     return [int(parte) for parte in valor.split(",") if parte.strip()]
 
 
-async def listar(criar_sessao) -> int:
+async def listar(criar_sessao, empresa) -> int:
     async with criar_sessao() as sessao:
         consultores = (
-            (await sessao.execute(select(Consultor).order_by(Consultor.nome)))
+            (
+                await sessao.execute(
+                    select(Consultor)
+                    .where(Consultor.empresa_id == empresa.id)
+                    .order_by(Consultor.nome)
+                )
+            )
             .scalars()
             .all()
         )
+        print(f"Empresa: {empresa.slug}\n")
         for consultor in consultores:
             regras = (
                 (
@@ -74,11 +82,20 @@ async def listar(criar_sessao) -> int:
 
 
 async def main(args) -> int:
+    forcar_utf8()
     configurar_logging(destino="")
     criar_sessao = async_sessionmaker(obter_engine(), expire_on_commit=False)
 
+    async with criar_sessao() as sessao:
+        try:
+            empresa = await resolver_argumento(sessao, args.empresa)
+        except EmpresaDesconhecida as erro:
+            print(erro)
+            await encerrar()
+            return 2
+
     if args.listar:
-        codigo = await listar(criar_sessao)
+        codigo = await listar(criar_sessao, empresa)
         await encerrar()
         return codigo
 
@@ -90,7 +107,11 @@ async def main(args) -> int:
         return 1
 
     async with criar_sessao() as sessao:
-        consulta = select(Consultor).where(Consultor.ativo.is_(True))
+        # Escopado: o mesmo e-mail pode existir em duas empresas, e apagar a
+        # agenda inteira do consultor errado e o tipo de estrago que nao avisa.
+        consulta = select(Consultor).where(
+            Consultor.empresa_id == empresa.id, Consultor.ativo.is_(True)
+        )
         if args.email:
             consulta = consulta.where(Consultor.email == args.email.lower())
         consultores = (await sessao.execute(consulta)).scalars().all()
@@ -110,6 +131,7 @@ async def main(args) -> int:
             for dia in dias:
                 sessao.add(
                     RegraDisponibilidade(
+                        empresa_id=empresa.id,
                         consultor_id=consultor.id,
                         dia_semana=dia,
                         hora_inicio=inicio,
@@ -131,6 +153,9 @@ async def main(args) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Horários de atendimento.")
     parser.add_argument("--listar", action="store_true", help="mostra a agenda atual")
+    parser.add_argument(
+        "--empresa", default=None, help="slug da empresa; dispensável se só há uma"
+    )
     parser.add_argument("--email", default=None, help="um consultor só")
     parser.add_argument("--dias", default="0-4", help="0=segunda; ex.: 0-4 ou 0,2,4")
     parser.add_argument("--inicio", default="09:00")

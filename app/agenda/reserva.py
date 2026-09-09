@@ -39,11 +39,18 @@ async def reservar(
     consultor_id: uuid.UUID,
     inicio_utc: datetime,
     fim_utc: datetime,
+    empresa_id: uuid.UUID,
 ) -> ResultadoReserva:
     try:
         # 1. Serializa as tentativas concorrentes para este consultor.
+        # A empresa entra AQUI, e nao so na oferta: esta e a ultima linha antes de
+        # gravar a reuniao. O horario escolhido vem do contexto, que veio do banco
+        # como JSONB — mesmo corrompido, um consultor de outra empresa e recusado
+        # em vez de confiado.
         travado = await sessao.execute(
-            select(Consultor.id).where(Consultor.id == consultor_id).with_for_update()
+            select(Consultor.id)
+            .where(Consultor.id == consultor_id, Consultor.empresa_id == empresa_id)
+            .with_for_update()
         )
         if travado.scalar_one_or_none() is None:
             return ResultadoReserva(ok=False, motivo="consultor inexistente")

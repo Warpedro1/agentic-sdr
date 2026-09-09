@@ -37,10 +37,19 @@ class LeadAindaNaoEnviado(ErroJuridico):
 
 
 class EntregadorJuridico:
+    """Entrega a fila de UMA empresa no juridico dela.
+
+    Um por empresa, e nao um despachante unico: o cliente HTTP ja carrega o
+    endereco e a credencial de um juridico so. E a drenagem e disparada durante o
+    atendimento — drenar a fila de outra empresa no meio da conversa desta
+    acoplaria a latencia de um escritorio a de outro.
+    """
+
     def __init__(
         self,
         criar_sessao: async_sessionmaker[AsyncSession],
         cliente: ClienteJuridico,
+        empresa_id: uuid.UUID,
         max_tentativas: int = 5,
         canal_contato: str = "WHATSAPP",
         backoff: Backoff | None = None,
@@ -48,6 +57,7 @@ class EntregadorJuridico:
     ) -> None:
         self._criar_sessao = criar_sessao
         self._cliente = cliente
+        self._empresa_id = empresa_id
         self._max_tentativas = max_tentativas
         self._canal = canal_contato
         self._backoff = backoff or Backoff()
@@ -62,7 +72,13 @@ class EntregadorJuridico:
         travados: set[uuid.UUID] = set()
 
         async with self._criar_sessao() as sessao:
-            fila = await pendentes(sessao, agora, self._max_tentativas, limite)
+            fila = await pendentes(
+                sessao,
+                agora,
+                self._max_tentativas,
+                empresa_id=self._empresa_id,
+                limite=limite,
+            )
 
             for item in fila:
                 if item.lead_id and item.lead_id in travados:
@@ -119,9 +135,23 @@ class EntregadorJuridico:
             raise ErroJuridico(f"tipo de envio desconhecido: {item.tipo}", status=400)
 
     async def _lead_local(self, sessao: AsyncSession, item: CrmOutbox) -> Lead | None:
+        """O lead do item, conferindo que ele e mesmo desta empresa.
+
+        Ultima barreira antes de mandar dado de um escritorio para o CRM de outro.
+        Chegar aqui com lead de outra empresa e defeito de programacao, nao
+        indisponibilidade — por isso o erro e PERMANENTE: queima as tentativas de
+        uma vez e vira algo que uma pessoa olha, em vez de ficar tentando.
+        """
         if not item.lead_id:
             return None
-        return await sessao.get(Lead, item.lead_id)
+        lead = await sessao.get(Lead, item.lead_id)
+        if lead is not None and lead.empresa_id != self._empresa_id:
+            raise ErroJuridico(
+                f"item da empresa {item.empresa_id} com lead da empresa "
+                f"{lead.empresa_id}: recusado antes de enviar",
+                status=400,
+            )
+        return lead
 
     async def _entregar_lead(self, sessao: AsyncSession, item: CrmOutbox) -> None:
         """Cria a negociação do lead. `crm_lead_id` guarda o id dela.

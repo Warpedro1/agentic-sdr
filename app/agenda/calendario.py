@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import StatusAgendamento
-from app.models import Agendamento
+from app.models import Agendamento, Consultor
 
 
 @dataclass(frozen=True)
@@ -45,14 +45,21 @@ class CalendarProvider(Protocol):
 class PostgresCalendarProvider:
     """Implementacao sobre a tabela `agendamentos`."""
 
-    def __init__(self, sessao: AsyncSession) -> None:
+    def __init__(self, sessao: AsyncSession, empresa_id: uuid.UUID) -> None:
         self._sessao = sessao
+        #: Amarrada na construcao, e nao passada em cada chamada: um provedor
+        #: externo (o Google Calendar, quando entrar) e inerentemente de uma
+        #: empresa — credencial e calendario sao dela. Assim a interface nao muda.
+        self._empresa_id = empresa_id
 
     async def listar_ocupados(self, de: datetime, ate: datetime) -> list[Ocupacao]:
         linhas = await self._sessao.execute(
             select(
                 Agendamento.consultor_id, Agendamento.inicio_utc, Agendamento.fim_utc
-            ).where(
+            )
+            .join(Consultor, Consultor.id == Agendamento.consultor_id)
+            .where(
+                Consultor.empresa_id == self._empresa_id,
                 Agendamento.status == StatusAgendamento.AGENDADO.value,
                 Agendamento.fim_utc > de,
                 Agendamento.inicio_utc < ate,

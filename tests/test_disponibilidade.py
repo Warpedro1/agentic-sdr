@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.availability import expandir_regra, gerar_candidatos
-from app.calendar import PostgresCalendarProvider
+from app.agenda.disponibilidade import expandir_regra, gerar_candidatos
+from app.agenda.calendario import PostgresCalendarProvider
 from app.models import Consultor, RegraDisponibilidade
 
 SP = ZoneInfo("America/Sao_Paulo")
@@ -58,13 +58,16 @@ def test_sem_buffer_os_horarios_ficam_colados():
 # --- geracao com banco ------------------------------------------------------
 
 
-async def _consultor_com_agenda(sessao, nome, email, dias=range(0, 5)):
-    consultor = Consultor(nome=nome, email=email, ativo=True)
+async def _consultor_com_agenda(sessao, empresa, nome, email, dias=range(0, 5)):
+    consultor = Consultor(
+        empresa_id=empresa.id, nome=nome, email=email, ativo=True
+    )
     sessao.add(consultor)
     await sessao.flush()
     for dia in dias:
         sessao.add(
             RegraDisponibilidade(
+                empresa_id=empresa.id,
                 consultor_id=consultor.id,
                 dia_semana=dia,
                 hora_inicio=time(9, 0),
@@ -78,13 +81,14 @@ async def _consultor_com_agenda(sessao, nome, email, dias=range(0, 5)):
 
 
 @pytest.mark.asyncio
-async def test_gera_candidatos_para_consultor_ativo(sessao_db):
-    await _consultor_com_agenda(sessao_db, "Ana", "ana@exemplo.com.br")
+async def test_gera_candidatos_para_consultor_ativo(sessao_db, empresa):
+    await _consultor_com_agenda(sessao_db, empresa, "Ana", "ana@exemplo.com.br")
 
     agora = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)  # quarta, 9h em SP
     candidatos = await gerar_candidatos(
         sessao_db,
-        PostgresCalendarProvider(sessao_db),
+        PostgresCalendarProvider(sessao_db, empresa.id),
+        empresa.id,
         de=agora,
         ate=agora + timedelta(days=2),
         agora=agora,
@@ -97,13 +101,14 @@ async def test_gera_candidatos_para_consultor_ativo(sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_antecedencia_minima_corta_o_que_e_cedo_demais(sessao_db):
-    await _consultor_com_agenda(sessao_db, "Ana", "ana@exemplo.com.br")
+async def test_antecedencia_minima_corta_o_que_e_cedo_demais(sessao_db, empresa):
+    await _consultor_com_agenda(sessao_db, empresa, "Ana", "ana@exemplo.com.br")
 
     agora = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
     candidatos = await gerar_candidatos(
         sessao_db,
-        PostgresCalendarProvider(sessao_db),
+        PostgresCalendarProvider(sessao_db, empresa.id),
+        empresa.id,
         de=agora,
         ate=agora + timedelta(days=2),
         agora=agora,
@@ -113,15 +118,16 @@ async def test_antecedencia_minima_corta_o_que_e_cedo_demais(sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_consultor_inativo_nao_gera_horario(sessao_db):
-    consultor = await _consultor_com_agenda(sessao_db, "Ana", "ana@exemplo.com.br")
+async def test_consultor_inativo_nao_gera_horario(sessao_db, empresa):
+    consultor = await _consultor_com_agenda(sessao_db, empresa, "Ana", "ana@exemplo.com.br")
     consultor.ativo = False
     await sessao_db.commit()
 
     agora = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
     candidatos = await gerar_candidatos(
         sessao_db,
-        PostgresCalendarProvider(sessao_db),
+        PostgresCalendarProvider(sessao_db, empresa.id),
+        empresa.id,
         de=agora,
         ate=agora + timedelta(days=2),
         agora=agora,
@@ -131,19 +137,21 @@ async def test_consultor_inativo_nao_gera_horario(sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_horario_ja_ocupado_some_da_lista(sessao_db):
+async def test_horario_ja_ocupado_some_da_lista(sessao_db, empresa):
     from app.models import Lead
 
-    consultor = await _consultor_com_agenda(sessao_db, "Ana", "ana@exemplo.com.br")
-    lead = Lead(telefone_e164="+5511987654321", canal="terminal")
+    consultor = await _consultor_com_agenda(sessao_db, empresa, "Ana", "ana@exemplo.com.br")
+    lead = Lead(
+        empresa_id=empresa.id, telefone_e164="+5511987654321", canal="terminal"
+    )
     sessao_db.add(lead)
     await sessao_db.commit()
 
     agora = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
-    calendario = PostgresCalendarProvider(sessao_db)
+    calendario = PostgresCalendarProvider(sessao_db, empresa.id)
 
     antes = await gerar_candidatos(
-        sessao_db, calendario, agora, agora + timedelta(days=2), agora, 2
+        sessao_db, calendario, empresa.id, agora, agora + timedelta(days=2), agora, 2
     )
     alvo = antes[0]
 
@@ -153,21 +161,22 @@ async def test_horario_ja_ocupado_some_da_lista(sessao_db):
     await sessao_db.commit()
 
     depois = await gerar_candidatos(
-        sessao_db, calendario, agora, agora + timedelta(days=2), agora, 2
+        sessao_db, calendario, empresa.id, agora, agora + timedelta(days=2), agora, 2
     )
     assert alvo.inicio_utc not in [c.inicio_utc for c in depois]
     assert len(depois) == len(antes) - 1
 
 
 @pytest.mark.asyncio
-async def test_fim_de_semana_nao_tem_horario(sessao_db):
+async def test_fim_de_semana_nao_tem_horario(sessao_db, empresa):
     # Agenda so de sabado (5) — para provar que o dia da semana e respeitado.
-    await _consultor_com_agenda(sessao_db, "Ana", "ana@exemplo.com.br", dias=[5])
+    await _consultor_com_agenda(sessao_db, empresa, "Ana", "ana@exemplo.com.br", dias=[5])
 
     agora = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)  # quarta
     candidatos = await gerar_candidatos(
         sessao_db,
-        PostgresCalendarProvider(sessao_db),
+        PostgresCalendarProvider(sessao_db, empresa.id),
+        empresa.id,
         de=agora,
         ate=agora + timedelta(days=2),  # quarta a sexta
         agora=agora,

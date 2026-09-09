@@ -89,6 +89,7 @@ def _montar_motor(criar_sessao, empresa, handler, agora=AGORA):
     entregador = EntregadorJuridico(
         criar_sessao=criar_sessao,
         cliente=cliente,
+        empresa_id=empresa.id,
         max_tentativas=5,
         relogio=lambda: agora,
         backoff=Backoff(base_segundos=30, teto_segundos=1800),
@@ -158,7 +159,10 @@ async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
         transport=_transporte(vivo_registrando),
     )
     entregador = EntregadorJuridico(
-        criar_sessao=criar_sessao_db, cliente=cliente2, relogio=lambda: depois
+        criar_sessao=criar_sessao_db,
+        cliente=cliente2,
+        empresa_id=empresa.id,
+        relogio=lambda: depois,
     )
     resumo = await entregador.drenar()
     await cliente2.fechar()

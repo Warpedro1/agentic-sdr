@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.routing import carga_futura, escolher_consultor
+from app.agenda.carga import carga_futura, escolher_consultor
 
 AGORA = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
@@ -69,12 +69,16 @@ def test_ferias_se_reequilibram_sozinhas():
 
 
 @pytest.mark.asyncio
-async def test_carga_futura_ignora_o_passado_e_o_cancelado(sessao_db):
+async def test_carga_futura_ignora_o_passado_e_o_cancelado(sessao_db, empresa):
     from app.enums import StatusAgendamento
     from app.models import Agendamento, Consultor, Lead
 
-    consultor = Consultor(nome="Ana", email="ana@exemplo.com.br")
-    lead = Lead(telefone_e164="+5511987654321", canal="terminal")
+    consultor = Consultor(
+        empresa_id=empresa.id, nome="Ana", email="ana@exemplo.com.br"
+    )
+    lead = Lead(
+        empresa_id=empresa.id, telefone_e164="+5511987654321", canal="terminal"
+    )
     sessao_db.add_all([consultor, lead])
     await sessao_db.flush()
 
@@ -99,7 +103,7 @@ async def test_carga_futura_ignora_o_passado_e_o_cancelado(sessao_db):
     )
     await sessao_db.commit()
 
-    cargas = await carga_futura(sessao_db, AGORA)
+    cargas = await carga_futura(sessao_db, AGORA, empresa.id)
     quantidade, ultimo = cargas[consultor.id]
     assert quantidade == 2
     assert ultimo == AGORA + timedelta(days=2)

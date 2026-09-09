@@ -36,6 +36,17 @@ def integracao_ativa(empresa: EmpresaCtx, config: Configuracao | None = None) ->
     Sem retorno para a credencial global: numa configuração errada, isso entregaria
     o dado de uma empresa com a credencial de outra.
     """
+    # Recusa explicita: a `Configuracao` tem, por coincidencia, os mesmos tres
+    # nomes de atributo que esta funcao le — `juridico_ativo`, `juridico_base_url`
+    # e `juridico_token`. Sem esta guarda, passar a configuracao no lugar da
+    # empresa PASSA em silencio e volta a usar a credencial global, furando pela
+    # porta dos fundos a regra de "cada empresa entrega no juridico dela". Foi
+    # exatamente o que aconteceu com `flush_outbox.py`.
+    if not isinstance(empresa, EmpresaCtx):
+        raise TypeError(
+            f"integracao_ativa espera uma empresa, recebeu {type(empresa).__name__}. "
+            "Resolva a empresa com `app.empresas.resolver_argumento` antes."
+        )
     config = config or obter_configuracao()
     return bool(
         config.juridico_ativo
@@ -82,12 +93,14 @@ def montar_cliente(
 def montar_entregador(
     criar_sessao: async_sessionmaker[AsyncSession],
     cliente: ClienteJuridico,
+    empresa: EmpresaCtx,
     config: Configuracao | None = None,
 ) -> EntregadorJuridico:
     config = config or obter_configuracao()
     return EntregadorJuridico(
         criar_sessao=criar_sessao,
         cliente=cliente,
+        empresa_id=empresa.id,
         max_tentativas=config.outbox_max_tentativas,
         canal_contato=config.juridico_canal_contato,
     )

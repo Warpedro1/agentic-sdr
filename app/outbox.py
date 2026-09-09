@@ -78,12 +78,23 @@ async def enfileirar(
 
 
 async def pendentes(
-    sessao: AsyncSession, agora: datetime, max_tentativas: int, limite: int = 100
+    sessao: AsyncSession,
+    agora: datetime,
+    max_tentativas: int,
+    *,
+    empresa_id: uuid.UUID,
+    limite: int = 100,
 ) -> list[CrmOutbox]:
-    """Itens prontos para entrega, na ordem em que foram criados.
+    """Itens desta empresa prontos para entrega, na ordem em que foram criados.
 
     Quem esgotou as tentativas fica de fora: continua no banco para inspeção,
     mas não fica sendo retentado para sempre.
+
+    **`empresa_id` é obrigatório e nomeado.** Cada instalação do juridico é uma
+    empresa, e esta consulta RESERVA as linhas que lê: sem o filtro, o entregador
+    de uma empresa consumiria os itens da outra e os postaria no CRM errado — o
+    dado de um escritório dentro do outro. Um valor padrão aqui reabriria o
+    vazamento com cara de conveniência.
 
     **`FOR UPDATE SKIP LOCKED` não é detalhe de performance — é correção.** A
     drenagem é disparada a cada marco da conversa, então várias rodadas correm ao
@@ -95,6 +106,7 @@ async def pendentes(
     resultado = await sessao.execute(
         select(CrmOutbox)
         .where(
+            CrmOutbox.empresa_id == empresa_id,
             CrmOutbox.entregue_em.is_(None),
             CrmOutbox.proxima_tentativa_em <= agora,
             CrmOutbox.tentativas < max_tentativas,
@@ -133,11 +145,22 @@ def marcar_falha(
     item.proxima_tentativa_em = agora + (backoff or Backoff()).proxima(item.tentativas)
 
 
-async def falhados(sessao: AsyncSession, max_tentativas: int) -> list[CrmOutbox]:
-    """O que desistiu de tentar. É a lista que alguém precisa olhar."""
+async def falhados(
+    sessao: AsyncSession, max_tentativas: int, empresa_id: uuid.UUID | None = None
+) -> list[CrmOutbox]:
+    """O que desistiu de tentar. É a lista que alguém precisa olhar.
+
+    Aqui a empresa é OPCIONAL, ao contrário de `pendentes`: esta consulta não
+    entrega nada, ela mostra. Quem opera quer poder ver o estrago inteiro de uma
+    vez, e restringir por padrão esconderia metade do problema.
+    """
+    criterios = [
+        CrmOutbox.entregue_em.is_(None),
+        CrmOutbox.tentativas >= max_tentativas,
+    ]
+    if empresa_id is not None:
+        criterios.append(CrmOutbox.empresa_id == empresa_id)
     resultado = await sessao.execute(
-        select(CrmOutbox)
-        .where(CrmOutbox.entregue_em.is_(None), CrmOutbox.tentativas >= max_tentativas)
-        .order_by(CrmOutbox.sequencia)
+        select(CrmOutbox).where(*criterios).order_by(CrmOutbox.sequencia)
     )
     return list(resultado.scalars().all())

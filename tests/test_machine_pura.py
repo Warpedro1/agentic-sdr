@@ -12,7 +12,10 @@ from pathlib import Path
 
 CAMINHO_MAQUINA = Path(__file__).resolve().parents[1] / "app" / "machine.py"
 
-#: Modulos que denunciam I/O escondido dentro da funcao pura.
+#: Bibliotecas que denunciam I/O escondido dentro da funcao pura.
+#:
+#: Aqui a lista e de PROIBIDOS, e esta certo: biblioteca de terceiros e biblioteca
+#: padrao nao nascem dentro deste repositorio, entao enumerar nao envelhece.
 IMPORTS_PROIBIDOS = {
     "sqlalchemy",
     "psycopg",
@@ -24,17 +27,29 @@ IMPORTS_PROIBIDOS = {
     "requests",
     "httpx",
     "random",
-    "app.db",
-    "app.models",
-    "app.config",
-    "app.engine",
-    "app.availability",
-    "app.routing",
-    "app.booking",
-    "app.calendar",
-    "app.crm",
-    "app.storage",
-    "app.channels.terminal",
+    "fastapi",
+    "uvicorn",
+    "twilio",
+    "yaml",
+}
+
+#: Modulos DESTE projeto que a maquina pode importar. Aqui a lista e de
+#: AUTORIZADOS, e a inversao e o ponto.
+#:
+#: Enumerar o proibido funcionava enquanto o projeto era pequeno, e falhou em
+#: silencio assim que cresceu: `app/segredos.py` nasceu depois da lista, le
+#: ambiente e disco, e a maquina podia importa-lo sem nenhum teste reclamar. O
+#: mesmo valia para os modulos de integracao, os de web e o adaptador de WhatsApp.
+#:
+#: Com a lista invertida, modulo novo e recusado por padrao — inclusive o que
+#: ainda nao existe. Ampliar a camada pura passa a ser uma decisao explicita, que
+#: se toma editando esta linha e justificando no commit.
+IMPORTS_INTERNOS_AUTORIZADOS = {
+    "app.channels.base",  # o contrato de mensagem (sem I/O, por isso pode)
+    "app.enums",
+    "app.guards",
+    "app.parsers",
+    "app.templates",
 }
 
 #: Chamadas que quebram o determinismo dos testes. O horario atual chega em
@@ -74,6 +89,28 @@ def test_machine_nao_importa_io():
     )
 
 
+def test_machine_so_importa_o_que_foi_autorizado_do_projeto():
+    """A cerca por construcao: modulo interno novo e recusado por padrao.
+
+    Este teste existe porque o anterior nao basta. Ele so pega o que alguem
+    lembrou de proibir — e um modulo criado depois da lista passa direto, mesmo
+    lendo disco e ambiente. Aqui a pergunta e a inversa: este import esta na lista
+    do que a camada pura pode ver?
+    """
+    internos = {
+        modulo
+        for modulo in _modulos_importados()
+        if modulo == "app" or modulo.startswith("app.")
+    }
+    nao_autorizados = internos - IMPORTS_INTERNOS_AUTORIZADOS
+    assert not nao_autorizados, (
+        f"app/machine.py importou {sorted(nao_autorizados)}, que nao esta na "
+        "camada pura. Ou o dado chega pelo ctx (quem preenche e o engine), ou a "
+        "maquina emite um Efeito e o engine executa. Se o modulo for mesmo puro, "
+        "acrescente-o a IMPORTS_INTERNOS_AUTORIZADOS e diga no commit por que."
+    )
+
+
 def test_machine_nao_le_o_relogio_nem_sorteia():
     encontradas = set()
     for no in ast.walk(_arvore()):
@@ -99,16 +136,21 @@ def test_machine_nao_abre_arquivo_nem_fala_com_o_terminal():
     )
 
 
-def test_importar_a_maquina_nao_carrega_o_stack_de_banco():
-    # A checagem de AST pega o import direto. Esta pega o indireto: se qualquer
-    # modulo na cadeia de app.machine puxar SQLAlchemy, aparece aqui.
+#: Pilhas que so aparecem por tabela: ninguem escreve `import sqlalchemy` na
+#: maquina, mas basta importar um modulo que o faca. Banco, rede e web sao os tres
+#: caminhos por onde I/O entra sem aparecer como import direto.
+STACKS_PROIBIDAS = ("sqlalchemy", "psycopg", "alembic", "httpx", "fastapi", "uvicorn")
+
+
+def test_importar_a_maquina_nao_carrega_stack_de_io():
+    # A checagem de AST pega o import direto. Esta pega o INDIRETO: se qualquer
+    # modulo na cadeia de app.machine puxar banco, rede ou web, aparece aqui.
     resultado = subprocess.run(
         [
             sys.executable,
             "-c",
             "import app.machine, sys; "
-            "proibidos = [m for m in ('sqlalchemy', 'psycopg', 'alembic') "
-            "if m in sys.modules]; "
+            f"proibidos = [m for m in {STACKS_PROIBIDAS!r} if m in sys.modules]; "
             "print(','.join(proibidos))",
         ],
         capture_output=True,
@@ -118,5 +160,5 @@ def test_importar_a_maquina_nao_carrega_o_stack_de_banco():
     assert resultado.returncode == 0, resultado.stderr
     assert resultado.stdout.strip() == "", (
         f"importar app.machine carregou {resultado.stdout.strip()} por tabela. "
-        "Alguem na cadeia de imports puxou o banco."
+        "Alguem na cadeia de imports puxou banco, rede ou web."
     )

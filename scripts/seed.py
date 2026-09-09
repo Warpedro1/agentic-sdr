@@ -3,14 +3,20 @@
 Idempotente: rodar duas vezes nao duplica nada.
 
     python scripts/seed.py
+    python scripts/seed.py --empresa acme
+
+Os consultores nascem numa empresa: cada instalacao do juridico e um escritorio
+diferente, e a agenda de um nao pode oferecer horario do outro.
 """
 
+import argparse
 from datetime import time
 
 from sqlalchemy import select
 
-from app.aio import executar
+from app.aio import executar, forcar_utf8
 from app.db import encerrar, sessao
+from app.empresas import EmpresaDesconhecida, resolver_argumento
 from app.logging import configurar_logging, obter_logger
 from app.models import Consultor, RegraDisponibilidade
 
@@ -31,19 +37,43 @@ DURACAO_MIN = 60
 BUFFER_MIN = 15
 
 
+def montar_argumentos() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--empresa",
+        help="slug da empresa que recebe os consultores; dispensavel se so ha uma",
+    )
+    return parser.parse_args()
+
+
 async def main() -> None:
+    forcar_utf8()
+    args = montar_argumentos()
     configurar_logging()
     criados_consultores = 0
     criadas_regras = 0
 
     async with sessao() as s:
+        try:
+            empresa = await resolver_argumento(s, args.empresa)
+        except EmpresaDesconhecida as erro:
+            print(erro)
+            raise SystemExit(2) from None
+
         for nome, email in CONSULTORES:
+            # Por empresa: a mesma pessoa pode atender dois escritorios.
             consultor = (
-                await s.execute(select(Consultor).where(Consultor.email == email))
+                await s.execute(
+                    select(Consultor).where(
+                        Consultor.empresa_id == empresa.id, Consultor.email == email
+                    )
+                )
             ).scalar_one_or_none()
 
             if consultor is None:
-                consultor = Consultor(nome=nome, email=email, ativo=True)
+                consultor = Consultor(
+                    empresa_id=empresa.id, nome=nome, email=email, ativo=True
+                )
                 s.add(consultor)
                 await s.flush()
                 criados_consultores += 1
@@ -63,6 +93,7 @@ async def main() -> None:
 
                 s.add(
                     RegraDisponibilidade(
+                        empresa_id=empresa.id,
                         consultor_id=consultor.id,
                         dia_semana=dia,
                         hora_inicio=HORA_INICIO,

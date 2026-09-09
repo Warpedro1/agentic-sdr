@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 
-from app.booking import reservar
+from app.agenda.reserva import reservar
 from app.enums import StatusAgendamento
 from app.models import Agendamento, Consultor, Lead
 
@@ -18,38 +18,42 @@ INICIO = datetime(2026, 8, 27, 17, 0, tzinfo=UTC)
 FIM = INICIO + timedelta(hours=1)
 
 
-async def _cenario(sessao):
-    consultor = Consultor(nome="Ana", email="ana@exemplo.com.br")
-    primeiro = Lead(telefone_e164="+5511900000001", canal="terminal")
-    segundo = Lead(telefone_e164="+5511900000002", canal="terminal")
+async def _cenario(sessao, empresa):
+    consultor = Consultor(empresa_id=empresa.id, nome="Ana", email="ana@exemplo.com.br")
+    primeiro = Lead(
+        empresa_id=empresa.id, telefone_e164="+5511900000001", canal="terminal"
+    )
+    segundo = Lead(
+        empresa_id=empresa.id, telefone_e164="+5511900000002", canal="terminal"
+    )
     sessao.add_all([consultor, primeiro, segundo])
     await sessao.commit()
     return consultor.id, primeiro.id, segundo.id
 
 
 @pytest.mark.asyncio
-async def test_reserva_simples(sessao_db):
-    consultor_id, lead_id, _ = await _cenario(sessao_db)
-    resultado = await reservar(sessao_db, lead_id, consultor_id, INICIO, FIM)
+async def test_reserva_simples(sessao_db, empresa):
+    consultor_id, lead_id, _ = await _cenario(sessao_db, empresa)
+    resultado = await reservar(sessao_db, lead_id, consultor_id, INICIO, FIM, empresa.id)
     assert resultado.ok
     assert resultado.agendamento_id is not None
 
 
 @pytest.mark.asyncio
-async def test_segunda_reserva_no_mesmo_horario_e_recusada(sessao_db):
-    consultor_id, primeiro, segundo = await _cenario(sessao_db)
+async def test_segunda_reserva_no_mesmo_horario_e_recusada(sessao_db, empresa):
+    consultor_id, primeiro, segundo = await _cenario(sessao_db, empresa)
 
-    assert (await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM)).ok
-    recusada = await reservar(sessao_db, segundo, consultor_id, INICIO, FIM)
+    assert (await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM, empresa.id)).ok
+    recusada = await reservar(sessao_db, segundo, consultor_id, INICIO, FIM, empresa.id)
 
     assert not recusada.ok
     assert recusada.motivo == "horario ocupado"
 
 
 @pytest.mark.asyncio
-async def test_sobreposicao_parcial_tambem_e_recusada(sessao_db):
-    consultor_id, primeiro, segundo = await _cenario(sessao_db)
-    await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM)
+async def test_sobreposicao_parcial_tambem_e_recusada(sessao_db, empresa):
+    consultor_id, primeiro, segundo = await _cenario(sessao_db, empresa)
+    await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM, empresa.id)
 
     # Comeca 30 min depois: o indice unique nao pegaria (inicio diferente), mas a
     # revalidacao por intervalo pega.
@@ -59,32 +63,35 @@ async def test_sobreposicao_parcial_tambem_e_recusada(sessao_db):
         consultor_id,
         INICIO + timedelta(minutes=30),
         FIM + timedelta(minutes=30),
+        empresa.id,
     )
     assert not resultado.ok
 
 
 @pytest.mark.asyncio
-async def test_horario_cancelado_volta_a_ficar_livre(sessao_db):
-    consultor_id, primeiro, segundo = await _cenario(sessao_db)
-    reserva = await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM)
+async def test_horario_cancelado_volta_a_ficar_livre(sessao_db, empresa):
+    consultor_id, primeiro, segundo = await _cenario(sessao_db, empresa)
+    reserva = await reservar(sessao_db, primeiro, consultor_id, INICIO, FIM, empresa.id)
 
     agendamento = await sessao_db.get(Agendamento, reserva.agendamento_id)
     agendamento.status = StatusAgendamento.CANCELADO.value
     await sessao_db.commit()
 
     # O indice e PARCIAL de proposito: so vale para status 'agendado'.
-    segunda = await reservar(sessao_db, segundo, consultor_id, INICIO, FIM)
+    segunda = await reservar(sessao_db, segundo, consultor_id, INICIO, FIM, empresa.id)
     assert segunda.ok
 
 
 @pytest.mark.asyncio
-async def test_dois_leads_ao_mesmo_tempo_so_um_agenda(sessao_db, criar_sessao_db):
+async def test_dois_leads_ao_mesmo_tempo_so_um_agenda(sessao_db, criar_sessao_db, empresa):
     """A corrida de verdade: duas sessoes independentes, simultaneas."""
-    consultor_id, primeiro, segundo = await _cenario(sessao_db)
+    consultor_id, primeiro, segundo = await _cenario(sessao_db, empresa)
 
     async def tentar(lead_id):
         async with criar_sessao_db() as sessao:
-            return await reservar(sessao, lead_id, consultor_id, INICIO, FIM)
+            return await reservar(
+                sessao, lead_id, consultor_id, INICIO, FIM, empresa.id
+            )
 
     resultados = await asyncio.gather(tentar(primeiro), tentar(segundo))
 

@@ -89,7 +89,9 @@ class RegistroIntegracoes:
             self._aposentados.append(guardado[1])
 
         cliente = montar_cliente(empresa, self._config)
-        entregador = montar_entregador(self._criar_sessao, cliente, self._config)
+        entregador = montar_entregador(
+            self._criar_sessao, cliente, empresa, self._config
+        )
         self._cache[empresa.id] = (digital, cliente, entregador)
         return cliente, entregador
 

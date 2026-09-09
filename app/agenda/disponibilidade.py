@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.calendar import CalendarProvider
+from app.agenda.calendario import CalendarProvider
 from app.models import Consultor, RegraDisponibilidade
 
 
@@ -67,20 +67,26 @@ def _colide(inicio: datetime, fim: datetime, ocupados) -> bool:
 async def gerar_candidatos(
     sessao: AsyncSession,
     calendario: CalendarProvider,
+    empresa_id: uuid.UUID,
     de: datetime,
     ate: datetime,
     agora: datetime,
     antecedencia_minima_horas: int,
     timezone_exibicao: str = "America/Sao_Paulo",
 ) -> list[Candidato]:
-    """Horarios livres de todos os consultores ativos, ordenados por horario."""
+    """Horarios livres dos consultores ATIVOS DESTA EMPRESA, ordenados por horario.
+
+    `empresa_id` sem valor padrao: um padrao significando "todas" ofereceria ao
+    lead o horario de um profissional de outro escritorio, e consumiria a
+    capacidade dele.
+    """
     fuso = ZoneInfo(timezone_exibicao)
     minimo = agora + timedelta(hours=antecedencia_minima_horas)
 
     linhas = await sessao.execute(
         select(Consultor, RegraDisponibilidade)
         .join(RegraDisponibilidade, RegraDisponibilidade.consultor_id == Consultor.id)
-        .where(Consultor.ativo.is_(True))
+        .where(Consultor.ativo.is_(True), Consultor.empresa_id == empresa_id)
     )
     regras_por_consultor = linhas.all()
     if not regras_por_consultor:
@@ -157,7 +163,7 @@ def montar_ofertas(
     O lead escolhe um HORARIO, e so. Um horario entra na lista se ALGUEM estiver
     livre nele; quem vai atender fica em aberto.
     """
-    from app.routing import ordenar_por_carga
+    from app.agenda.carga import ordenar_por_carga
 
     por_horario: dict[datetime, list[Candidato]] = {}
     for candidato in candidatos:

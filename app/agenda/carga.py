@@ -21,20 +21,28 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import StatusAgendamento
-from app.models import Agendamento
+from app.models import Agendamento, Consultor
 
 
 async def carga_futura(
-    sessao: AsyncSession, agora: datetime
+    sessao: AsyncSession, agora: datetime, empresa_id: uuid.UUID
 ) -> dict[uuid.UUID, tuple[int, datetime | None]]:
-    """Por consultor: quantos agendamentos futuros e qual o mais distante."""
+    """Por consultor DESTA EMPRESA: quantos agendamentos futuros e o mais distante.
+
+    O escopo vem por juncao com `consultores`, e nao por coluna propria em
+    `agendamentos`: a tabela e sempre alcancada pelo consultor, entao a empresa ja
+    esta a uma juncao de distancia e uma coluna a mais seria um segundo lugar onde
+    a verdade pode divergir.
+    """
     linhas = await sessao.execute(
         select(
             Agendamento.consultor_id,
             func.count(Agendamento.id),
             func.max(Agendamento.inicio_utc),
         )
+        .join(Consultor, Consultor.id == Agendamento.consultor_id)
         .where(
+            Consultor.empresa_id == empresa_id,
             Agendamento.status == StatusAgendamento.AGENDADO.value,
             Agendamento.inicio_utc >= agora,
         )

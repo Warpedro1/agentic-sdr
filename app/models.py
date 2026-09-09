@@ -23,6 +23,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -113,10 +114,10 @@ class Lead(Base):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     nome: Mapped[str | None] = mapped_column(String(160))
     #: Um contato basta: quem nao consegue informar um telefone valido e
@@ -156,16 +157,23 @@ class Lead(Base):
     documentos: Mapped[list[Documento]] = relationship(back_populates="lead")
     agendamentos: Mapped[list[Agendamento]] = relationship(back_populates="lead")
 
-    # O telefone e a identidade quando existe — e no Postgres o UNIQUE trata cada
-    # vazio como distinto, entao varios leads sem telefone convivem.
+    # O telefone e a identidade DENTRO DE UMA EMPRESA — e no Postgres o UNIQUE
+    # trata cada vazio como distinto, entao varios leads sem telefone convivem.
+    #
+    # Por empresa, e nao global: cada instalacao do juridico e um escritorio
+    # diferente, e a mesma pessoa atendida por dois deles sao dois cadastros com
+    # historicos que nao se misturam.
     #
     # O e-mail so identifica quem NAO tem telefone, e por isso a trava dele e
     # parcial. Unicidade simples no e-mail seria forte demais: duas pessoas da
     # mesma casa podem dar o mesmo e-mail e telefones diferentes, e sao dois leads.
     __table_args__ = (
-        UniqueConstraint("telefone_e164", name="uq_leads_telefone_e164"),
+        UniqueConstraint(
+            "empresa_id", "telefone_e164", name="uq_leads_empresa_telefone"
+        ),
         Index(
             "uq_leads_email_sem_telefone",
+            "empresa_id",
             "email",
             unique=True,
             postgresql_where=text("telefone_e164 IS NULL"),
@@ -177,10 +185,10 @@ class Conversa(Base):
     __tablename__ = "conversas"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("leads.id", ondelete="CASCADE")
@@ -216,6 +224,7 @@ class Conversa(Base):
         # aberta — o mesmo numero volta amanha e abre outra.
         Index(
             "uq_conversa_aberta_por_identidade",
+            "empresa_id",
             "canal",
             "identidade_externa",
             unique=True,
@@ -281,10 +290,10 @@ class Consultor(Base):
     __tablename__ = "consultores"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     nome: Mapped[str] = mapped_column(String(160), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
@@ -298,21 +307,28 @@ class Consultor(Base):
     )
     agendamentos: Mapped[list[Agendamento]] = relationship(back_populates="consultor")
 
-    __table_args__ = (UniqueConstraint("email", name="uq_consultores_email"),)
+    __table_args__ = (
+        # Por empresa: a mesma pessoa pode atender dois escritorios.
+        UniqueConstraint("empresa_id", "email", name="uq_consultores_empresa_email"),
+        # Parece redundante com a chave primaria, e nao e: existe para ser o alvo
+        # da chave estrangeira composta de `regras_disponibilidade`, que e o que
+        # impede uma regra de agenda apontar para consultor de outra empresa.
+        UniqueConstraint("id", "empresa_id", name="uq_consultores_id_empresa"),
+    )
 
 
 class RegraDisponibilidade(Base):
     __tablename__ = "regras_disponibilidade"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    consultor_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("consultores.id", ondelete="CASCADE"), nullable=False
-    )
+    #: Sem chave estrangeira propria: quem garante a integridade e a chave
+    #: COMPOSTA em `__table_args__`, que amarra consultor e empresa juntos.
+    consultor_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     #: 0 = segunda ... 6 = domingo (mesma convencao de datetime.weekday()).
     dia_semana: Mapped[int] = mapped_column(Integer, nullable=False)
     hora_inicio: Mapped[time] = mapped_column(Time, nullable=False)
@@ -323,6 +339,17 @@ class RegraDisponibilidade(Base):
     consultor: Mapped[Consultor] = relationship(back_populates="regras")
 
     __table_args__ = (
+        # Composta de proposito: torna IMPOSSIVEL uma regra de agenda apontar para
+        # consultor de outra empresa. `empresa_id` aqui e desnormalizacao (a
+        # empresa e derivavel do consultor), e sem esta chave seria um segundo
+        # lugar onde a verdade pode divergir — divergencia em agenda vira horario
+        # oferecido pela empresa errada.
+        ForeignKeyConstraint(
+            ["consultor_id", "empresa_id"],
+            ["consultores.id", "consultores.empresa_id"],
+            name="fk_regra_consultor_empresa",
+            ondelete="CASCADE",
+        ),
         UniqueConstraint(
             "consultor_id", "dia_semana", "hora_inicio", name="uq_regra_consultor_dia"
         ),
@@ -385,10 +412,10 @@ class OptOut(Base):
     __tablename__ = "opt_outs"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     telefone_e164: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(320))
@@ -430,10 +457,10 @@ class CrmOutbox(Base):
     sequencia: Mapped[int] = mapped_column(
         BigInteger, Identity(always=False), nullable=False, unique=True
     )
-    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
-    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
-    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    #: A empresa dona desta linha. Obrigatoria: e o que impede uma consulta
+    #: alcancar o dado de outra empresa.
+    empresa_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     #: "lead", "qualificacao" ou "agendamento".
     tipo: Mapped[str] = mapped_column(String(30), nullable=False)

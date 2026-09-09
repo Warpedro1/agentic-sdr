@@ -150,7 +150,7 @@ ao mesmo tempo não avançarem o estado juntas — senão uma sobrescreve o que 
 gravou, e a conversa pula ou repete uma pergunta.
 
 O atendimento precisa ser serializado por conversa. O projeto já tem o remédio e o
-precedente: `app/booking.py` usa `SELECT ... FOR UPDATE` com revalidação dentro da
+precedente: `app/agenda/reserva.py` usa `SELECT ... FOR UPDATE` com revalidação dentro da
 trava para impedir dupla marcação.
 
 ---

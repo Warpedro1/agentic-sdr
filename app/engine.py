@@ -31,9 +31,9 @@ from typing import Any
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.availability import gerar_candidatos, montar_ofertas
-from app.booking import ResultadoReserva, reservar
-from app.calendar import PostgresCalendarProvider
+from app.agenda.disponibilidade import gerar_candidatos, montar_ofertas
+from app.agenda.reserva import ResultadoReserva, reservar
+from app.agenda.calendario import PostgresCalendarProvider
 from app.channels.base import ChannelAdapter, InboundMessage, MensagemSaida
 from app.config import Configuracao, obter_configuracao
 from app.crm import CrmSink, CrmSinkNoop
@@ -55,7 +55,7 @@ from app.machine import (
     handle,
 )
 from app.models import Conversa, Documento, Lead, Mensagem, OptOut
-from app.routing import carga_futura
+from app.agenda.carga import carga_futura
 from app.storage.local import ArmazenamentoDocumento
 from app.templates import CatalogoMensagens, obter_catalogo
 
@@ -263,6 +263,7 @@ class Engine:
             conversa = (
                 await sessao.execute(
                     select(Conversa).where(
+                        Conversa.empresa_id == self._empresa.id,
                         Conversa.canal == self._adaptador.canal,
                         Conversa.identidade_externa == identidade,
                         Conversa.encerrada_em.is_(None),
@@ -518,7 +519,11 @@ class Engine:
                 # ja tem telefone e outra pessoa, ainda que compartilhe o e-mail.
                 criterio = (Lead.email == efeito.email) & Lead.telefone_e164.is_(None)
             existente = (
-                await sessao.execute(select(Lead).where(criterio))
+                await sessao.execute(
+                    # A empresa entra aqui: sem ela, a busca acharia o cadastro da
+                    # outra empresa e o reaproveitaria, misturando os historicos.
+                    select(Lead).where(criterio, Lead.empresa_id == self._empresa.id)
+                )
             ).scalar_one_or_none()
 
             conhecido: dict | None = None
@@ -571,7 +576,11 @@ class Engine:
             opt_out = (
                 await sessao.execute(
                     select(OptOut)
-                    .where(criterio_opt_out, OptOut.revogado_em.is_(None))
+                    .where(
+                        criterio_opt_out,
+                        OptOut.empresa_id == self._empresa.id,
+                        OptOut.revogado_em.is_(None),
+                    )
                     .order_by(desc(OptOut.criado_em))
                     .limit(1)
                 )
@@ -616,17 +625,18 @@ class Engine:
     async def _gerar_slots(self, execucao: Execucao) -> None:
         agora = self._agora()
         async with self._criar_sessao() as sessao:
-            calendario = PostgresCalendarProvider(sessao)
+            calendario = PostgresCalendarProvider(sessao, self._empresa.id)
             candidatos = await gerar_candidatos(
                 sessao,
                 calendario,
+                self._empresa.id,
                 de=agora,
                 ate=agora + timedelta(days=self._config.horizonte_dias),
                 agora=agora,
                 antecedencia_minima_horas=self._config.antecedencia_minima_horas,
                 timezone_exibicao=self._config.timezone_exibicao,
             )
-            cargas = await carga_futura(sessao, agora)
+            cargas = await carga_futura(sessao, agora, self._empresa.id)
 
         ofertas = montar_ofertas(candidatos, cargas, self._config.slots_ofertados)
         fuso = self._config.timezone_exibicao
@@ -671,6 +681,7 @@ class Engine:
                     consultor_id=uuid.UUID(str(consultor_id)),
                     inicio_utc=inicio,
                     fim_utc=fim,
+                    empresa_id=self._empresa.id,
                 )
             if resultado.ok:
                 break
@@ -747,7 +758,11 @@ class Engine:
         async with self._criar_sessao() as sessao:
             ativos = (
                 await sessao.execute(
-                    select(OptOut).where(criterio, OptOut.revogado_em.is_(None))
+                    select(OptOut).where(
+                        criterio,
+                        OptOut.empresa_id == self._empresa.id,
+                        OptOut.revogado_em.is_(None),
+                    )
                 )
             ).scalars()
             for registro in ativos:
