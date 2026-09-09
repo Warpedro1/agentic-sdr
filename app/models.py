@@ -50,10 +50,74 @@ def _agora() -> Any:
     )
 
 
+class Empresa(Base):
+    """Uma empresa atendida pela Marina — e, do outro lado, uma instalacao do juridico.
+
+    Cada instalacao do juridico representa UMA empresa e seus funcionarios. E esta
+    linha que liga as duas pontas: o numero de WhatsApp por onde a mensagem chega e
+    o endereco do juridico para onde o lead vai.
+
+    **O segredo de acesso nao mora aqui.** `juridico_token_env` guarda o NOME da
+    variavel de ambiente que carrega o token. Uma coluna com o token apareceria em
+    `pg_dump`, em replica e em qualquer `SELECT *` — e dumps de desenvolvimento
+    circulam entre maquinas.
+    """
+
+    __tablename__ = "empresas"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: Chave estavel: linha de comando, nome de variavel de ambiente, log.
+    slug: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: Razao social, como o CRM da propria empresa a chama. Entra na saudacao, para
+    #: o lead ouvir sempre a mesma denominacao dos dois lados.
+    nome: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: Como citar a empresa no meio da frase ("Como voce chegou ate a Leve?").
+    #: Vazio cai para `nome`.
+    nome_curto: Mapped[str | None] = mapped_column(String(60))
+    ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: E.164 SEM o prefixo `whatsapp:`. E a chave de roteamento: a mensagem e
+    #: atribuida a empresa dona do numero que a recebeu.
+    #:
+    #: Nulo e unico ao mesmo tempo: no Postgres cada NULL e distinto, entao varias
+    #: empresas convivem sem numero (a que so roda no terminal, a que foi cadastrada
+    #: antes de o remetente ser liberado) e o roteamento nunca casa com nulo.
+    whatsapp_numero: Mapped[str | None] = mapped_column(String(20))
+
+    juridico_ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    juridico_base_url: Mapped[str] = mapped_column(
+        String(255), nullable=False, default=""
+    )
+    #: NOME da variavel de ambiente com o token — nunca o token.
+    juridico_token_env: Mapped[str] = mapped_column(
+        String(80), nullable=False, default=""
+    )
+    #: Id da empresa no juridico, capturado no cadastro. Diagnostico apenas: e local
+    #: daquela instalacao, entao vale 1 em quase todas e nao serve como chave.
+    crm_empresa_id: Mapped[str | None] = mapped_column(String(64))
+
+    criado_em: Mapped[datetime] = _agora()
+    atualizado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_empresas_slug"),
+        Index("uq_empresas_whatsapp_numero", "whatsapp_numero", unique=True),
+    )
+
+
 class Lead(Base):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     nome: Mapped[str | None] = mapped_column(String(160))
     #: Um contato basta: quem nao consegue informar um telefone valido e
     #: identificado pelo e-mail. Por isso os dois sao opcionais aqui — mas a
@@ -75,10 +139,9 @@ class Lead(Base):
 
     canal: Mapped[str] = mapped_column(String(20), nullable=False)
 
-    #: Id deste lead no CRM externo (hoje o `juridico`). Nome generico de
-    #: proposito: a Marina vai atender mais de um sistema, e o dia em que dois
-    #: backends coexistirem isto vira uma tabela de ligacao, nao uma coluna por
-    #: fornecedor.
+    #: Id deste lead no CRM externo (hoje o `juridico`). Escalar de proposito:
+    #: o lead pertence a UMA empresa e cada empresa tem uma instalacao do juridico,
+    #: entao nao existe o caso de um mesmo lead viver em dois backends.
     crm_lead_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
     criado_em: Mapped[datetime] = _agora()
@@ -114,6 +177,11 @@ class Conversa(Base):
     __tablename__ = "conversas"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("leads.id", ondelete="CASCADE")
     )
@@ -213,6 +281,11 @@ class Consultor(Base):
     __tablename__ = "consultores"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     nome: Mapped[str] = mapped_column(String(160), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -232,6 +305,11 @@ class RegraDisponibilidade(Base):
     __tablename__ = "regras_disponibilidade"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     consultor_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("consultores.id", ondelete="CASCADE"), nullable=False
     )
@@ -307,6 +385,11 @@ class OptOut(Base):
     __tablename__ = "opt_outs"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     telefone_e164: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(320))
     motivo: Mapped[str | None] = mapped_column(Text)
@@ -347,6 +430,11 @@ class CrmOutbox(Base):
     sequencia: Mapped[int] = mapped_column(
         BigInteger, Identity(always=False), nullable=False, unique=True
     )
+    #: A empresa dona desta linha. Nullable por enquanto — a obrigatoriedade
+    #: entra junto com o escopo de leitura, quando a fiacao ja preenche.
+    empresa_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("empresas.id", ondelete="RESTRICT"), index=True
+    )
     #: "lead", "qualificacao" ou "agendamento".
     tipo: Mapped[str] = mapped_column(String(30), nullable=False)
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -369,6 +457,7 @@ class CrmOutbox(Base):
 
 __all__ = [
     "Base",
+    "Empresa",
     "Lead",
     "Conversa",
     "Mensagem",

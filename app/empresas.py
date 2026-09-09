@@ -1,0 +1,136 @@
+"""Leitura das empresas atendidas pela Marina.
+
+Cada instalacao do juridico e uma empresa. Este modulo responde tres perguntas, e
+so essas: de quem e este numero de WhatsApp, quem e a empresa deste slug, e quais
+empresas estao ativas.
+
+Devolve um `EmpresaCtx` congelado, e nao a linha do ORM, por dois motivos concretos:
+a linha morre junto com a sessao que a leu — e o Engine sobrevive a ela —, e o token
+precisa ser resolvido do ambiente uma vez, na leitura, em vez de a cada uso.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Empresa
+from app.segredos import ler as ler_segredo
+
+
+class EmpresaDesconhecida(Exception):
+    """Pediram uma empresa que nao existe, ou nao disseram qual entre varias."""
+
+
+@dataclass(frozen=True)
+class EmpresaCtx:
+    """Fotografia imutavel de uma empresa, desamarrada da sessao que a leu."""
+
+    id: uuid.UUID
+    slug: str
+    nome: str
+    nome_curto: str
+    whatsapp_numero: str | None
+    juridico_ativo: bool
+    juridico_base_url: str
+    #: `repr=False` nao e cosmetico: e o que impede o token de vazar quando alguem
+    #: escrever `logger.info("...", empresa=empresa)`.
+    juridico_token: str = field(default="", repr=False)
+    crm_empresa_id: str | None = None
+
+    @property
+    def curto(self) -> str:
+        """Como citar a empresa no meio de uma frase."""
+        return self.nome_curto or self.nome
+
+
+def slug_para_env(slug: str) -> str:
+    """O nome da variavel de ambiente que carrega o token desta empresa."""
+    return "JURIDICO_TOKEN_" + slug.upper().replace("-", "_")
+
+
+def _congelar(linha: Empresa) -> EmpresaCtx:
+    return EmpresaCtx(
+        id=linha.id,
+        slug=linha.slug,
+        nome=linha.nome,
+        nome_curto=linha.nome_curto or "",
+        whatsapp_numero=linha.whatsapp_numero,
+        juridico_ativo=linha.juridico_ativo,
+        juridico_base_url=linha.juridico_base_url,
+        juridico_token=ler_segredo(linha.juridico_token_env),
+        crm_empresa_id=linha.crm_empresa_id,
+    )
+
+
+def _so_numero(valor: str) -> str:
+    """Aceita tanto `whatsapp:+55...` quanto `+55...`."""
+    return valor.strip().removeprefix("whatsapp:").strip()
+
+
+async def por_numero(sessao: AsyncSession, numero: str) -> EmpresaCtx | None:
+    """A empresa dona do numero que recebeu a mensagem.
+
+    Numero vazio devolve None sem consultar: no Postgres a comparacao com NULL nunca
+    casa, mas gastar a consulta para descobrir isso e desnecessario.
+    """
+    limpo = _so_numero(numero or "")
+    if not limpo:
+        return None
+    linha = await sessao.scalar(
+        select(Empresa).where(
+            Empresa.whatsapp_numero == limpo, Empresa.ativo.is_(True)
+        )
+    )
+    return _congelar(linha) if linha else None
+
+
+async def por_slug(sessao: AsyncSession, slug: str) -> EmpresaCtx | None:
+    linha = await sessao.scalar(select(Empresa).where(Empresa.slug == (slug or "").strip()))
+    return _congelar(linha) if linha else None
+
+
+async def por_id(sessao: AsyncSession, empresa_id: uuid.UUID) -> EmpresaCtx | None:
+    linha = await sessao.get(Empresa, empresa_id)
+    return _congelar(linha) if linha else None
+
+
+async def listar_ativas(sessao: AsyncSession) -> list[EmpresaCtx]:
+    linhas = await sessao.scalars(
+        select(Empresa).where(Empresa.ativo.is_(True)).order_by(Empresa.slug)
+    )
+    return [_congelar(linha) for linha in linhas]
+
+
+async def resolver_argumento(sessao: AsyncSession, slug: str | None) -> EmpresaCtx:
+    """A empresa que uma ferramenta de linha de comando deve usar.
+
+    Com uma empresa cadastrada, ela e assumida — quem opera uma instalacao de uma
+    empresa so nao paga o custo do multiempresa. Com duas ou mais e sem `--empresa`,
+    **recusa adivinhar**: escolher a errada aqui escreve no CRM do cliente errado.
+    """
+    if slug:
+        empresa = await por_slug(sessao, slug)
+        if empresa is None:
+            conhecidas = ", ".join(e.slug for e in await listar_ativas(sessao)) or "nenhuma"
+            raise EmpresaDesconhecida(
+                f"empresa '{slug}' nao encontrada. Cadastradas: {conhecidas}. "
+                "Cadastre com `python scripts/cadastrar_empresa.py`."
+            )
+        return empresa
+
+    ativas = await listar_ativas(sessao)
+    if not ativas:
+        raise EmpresaDesconhecida(
+            "nenhuma empresa cadastrada. Rode `python scripts/cadastrar_empresa.py`."
+        )
+    if len(ativas) > 1:
+        raise EmpresaDesconhecida(
+            "ha mais de uma empresa cadastrada: "
+            + ", ".join(e.slug for e in ativas)
+            + ". Diga qual com --empresa <slug>."
+        )
+    return ativas[0]

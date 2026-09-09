@@ -1,4 +1,7 @@
-"""Event loop compativel com o psycopg.
+"""Contornos de Windows compartilhados por todo ponto de entrada.
+
+Sao dois, e os dois se descobrem do jeito dificil: o event loop que o psycopg
+aceita, e o console que nao fala UTF-8.
 
 No Windows o loop padrao do asyncio e o Proactor, e o psycopg em modo async nao
 funciona nele — a conexao falha com InterfaceError antes de qualquer query. A
@@ -29,3 +32,17 @@ def loop_factory() -> asyncio.AbstractEventLoop:
 def executar(coro: Coroutine[Any, Any, T]) -> T:
     """asyncio.run() com o loop certo para o psycopg."""
     return asyncio.run(coro, loop_factory=loop_factory)
+
+
+def forcar_utf8() -> None:
+    """O console do Windows nao usa UTF-8 por padrao.
+
+    Sem isto "Ola" sai correto mas "Voce" e "cartao" saem quebrados — e tudo
+    que este projeto imprime e em portugues.
+    """
+    for fluxo in (sys.stdout, sys.stdin):
+        if hasattr(fluxo, "reconfigure"):
+            try:
+                fluxo.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass

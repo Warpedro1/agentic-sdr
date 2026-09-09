@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.channels.whatsapp_twilio import CANAL, TwilioWhatsApp
 from app.composicao import Dependencias, montar_motor
+from app.empresas import EmpresaCtx, por_numero
 from app.logging import obter_logger
 from app.models import MensagemRecebida
 from app.web.assinatura import url_do_webhook, valida
@@ -65,12 +66,19 @@ def criar_app(deps: Dependencias, twilio: TwilioWhatsApp | None = None) -> FastA
         form = await _formulario(request)
         _conferir_assinatura(deps, request, form)
 
+        # So agora o corpo e confiavel, e so por isso o `To` pode decidir de qual
+        # empresa e a mensagem. Resolver antes da assinatura deixaria qualquer um
+        # escolher em nome de qual empresa criar lead.
+        empresa = await _resolver_empresa(deps, form)
+        if empresa is None:
+            return Response(status_code=204)
+
         message_sid = form.get("MessageSid", "")
         if not await _registrar_recebida(deps, message_sid):
             logger.info("mensagem_repetida", message_sid=message_sid)
             return Response(status_code=204)
 
-        tarefa = asyncio.create_task(_atender(deps, cliente, form))
+        tarefa = asyncio.create_task(_atender(deps, cliente, empresa, form))
         em_voo.add(tarefa)
         tarefa.add_done_callback(em_voo.discard)
         return Response(status_code=204)
@@ -117,6 +125,33 @@ def _conferir_assinatura(
         raise HTTPException(status_code=403, detail="assinatura invalida")
 
 
+async def _resolver_empresa(
+    deps: Dependencias, form: Mapping[str, str]
+) -> EmpresaCtx | None:
+    """De quem e esta mensagem, pelo numero que a recebeu.
+
+    Numero desconhecido devolve None, e o chamador responde 204 sem gravar nada.
+    Nunca erro, por tres motivos: quem chama e a operadora e nao uma pessoa, entao
+    um 4xx so faz ela reentregar e encher o painel de alertas que ninguem consegue
+    acionar; um 404 confirmaria a um sondador quais numeros estao configurados; e o
+    caso e estado de CONFIGURACAO, nao falha — alguem apontou um numero para a
+    Marina antes de cadastrar a empresa. O aviso no log e o que resolve isso.
+
+    Sem cache: empresa recem-cadastrada precisa valer na proxima mensagem, e uma
+    consulta indexada a mais e irrelevante perto do que um turno ja faz.
+    """
+    numero = form.get("To", "")
+    async with deps.criar_sessao() as sessao:
+        empresa = await por_numero(sessao, numero)
+    if empresa is None:
+        logger.warning(
+            "empresa_desconhecida",
+            numero=numero,
+            message_sid=form.get("MessageSid"),
+        )
+    return empresa
+
+
 async def _registrar_recebida(deps: Dependencias, message_sid: str) -> bool:
     """Marca a mensagem como vista. False quando ja tinha sido.
 
@@ -143,20 +178,27 @@ async def _registrar_recebida(deps: Dependencias, message_sid: str) -> bool:
 
 
 async def _atender(
-    deps: Dependencias, cliente: TwilioWhatsApp, form: Mapping[str, str]
+    deps: Dependencias,
+    cliente: TwilioWhatsApp,
+    empresa: EmpresaCtx,
+    form: Mapping[str, str],
 ) -> None:
-    """Um turno da conversa, fora da requisicao."""
+    """Um turno da conversa desta empresa, fora da requisicao."""
     recebida = await cliente.receber_form(form)
     if not recebida.identidade:
         logger.warning("mensagem_sem_remetente", message_sid=recebida.message_sid)
         return
 
-    motor = montar_motor(deps, cliente.adaptador(recebida.identidade))
+    # A resposta sai pelo numero da empresa, senao o lead recebe mensagem de um
+    # numero para o qual nao escreveu.
+    adaptador = cliente.adaptador(recebida.identidade, empresa.whatsapp_numero)
+    motor = montar_motor(deps, adaptador, empresa)
     try:
         conversa_id = await motor.atender(recebida.identidade, recebida.entrada)
         logger.info(
             "mensagem_atendida",
             conversa_id=str(conversa_id),
+            empresa=empresa.slug,
             message_sid=recebida.message_sid,
             perfil=recebida.profile_name,
         )

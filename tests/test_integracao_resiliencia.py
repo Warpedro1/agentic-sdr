@@ -5,6 +5,7 @@ atendimento. Se um problema do outro sistema puder travar a conversa, a
 integração deixa a Marina pior do que ela era sem integração nenhuma.
 """
 
+import uuid
 from datetime import UTC, datetime, time, timedelta
 
 import httpx
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from app.channels.base import InboundMessage
 from app.channels.terminal import ScriptedAdapter
 from app.crm import CrmSinkOutbox
+from app.empresas import EmpresaCtx
 from app.engine import Engine
 from app.enums import Estado
 from app.integrations.juridico.cliente import ClienteJuridico
@@ -35,8 +37,9 @@ ROTEIRO = [
 ]
 
 
-async def _semear(sessao):
+async def _semear(sessao, empresa):
     consultor = Consultor(
+        empresa_id=empresa.id,
         nome="Ana Ribeiro",
         email="ana@exemplo.com.br",
         ativo=True,
@@ -47,6 +50,7 @@ async def _semear(sessao):
     for dia in range(0, 5):
         sessao.add(
             RegraDisponibilidade(
+                empresa_id=empresa.id,
                 consultor_id=consultor.id,
                 dia_semana=dia,
                 hora_inicio=time(9, 0),
@@ -76,7 +80,7 @@ def _juridico_vivo(request: httpx.Request) -> httpx.Response:
     return httpx.Response(201, json={"id": 42})
 
 
-def _montar_motor(criar_sessao, handler, agora=AGORA):
+def _montar_motor(criar_sessao, empresa, handler, agora=AGORA):
     cliente = ClienteJuridico(
         base_url="https://juridico.exemplo",
         token="token-de-teste",
@@ -91,10 +95,11 @@ def _montar_motor(criar_sessao, handler, agora=AGORA):
     )
     motor = Engine(
         criar_sessao=criar_sessao,
+        empresa=empresa,
         adaptador=ScriptedAdapter([InboundMessage(texto=t) for t in ROTEIRO]),
         # O mesmo relogio do motor: sem isso o item nasce com a hora real do
         # Postgres e a drenagem, congelada em AGORA, nao o veria como pendente.
-        crm=CrmSinkOutbox(criar_sessao, relogio=lambda: agora),
+        crm=CrmSinkOutbox(criar_sessao, empresa.id, relogio=lambda: agora),
         entregador=entregador,
         relogio=lambda: agora,
     )
@@ -103,11 +108,11 @@ def _montar_motor(criar_sessao, handler, agora=AGORA):
 
 @pytest.mark.asyncio
 async def test_conversa_termina_normalmente_com_o_juridico_fora_do_ar(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
     """O teste mais importante deste arquivo."""
-    await _semear(sessao_db)
-    motor, cliente = _montar_motor(criar_sessao_db, _juridico_morto)
+    await _semear(sessao_db, empresa)
+    motor, cliente = _montar_motor(criar_sessao_db, empresa, _juridico_morto)
 
     conversa_id = await motor.rodar()
     await cliente.fechar()
@@ -133,10 +138,10 @@ async def test_conversa_termina_normalmente_com_o_juridico_fora_do_ar(
 
 @pytest.mark.asyncio
 async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
-    await _semear(sessao_db)
-    motor, cliente = _montar_motor(criar_sessao_db, _juridico_morto)
+    await _semear(sessao_db, empresa)
+    motor, cliente = _montar_motor(criar_sessao_db, empresa, _juridico_morto)
     await motor.rodar()
     await cliente.fechar()
 
@@ -169,10 +174,10 @@ async def test_quando_o_juridico_volta_a_fila_entrega_na_ordem(
 
 @pytest.mark.asyncio
 async def test_com_o_juridico_no_ar_tudo_chega_durante_a_conversa(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
-    await _semear(sessao_db)
-    motor, cliente = _montar_motor(criar_sessao_db, _juridico_vivo)
+    await _semear(sessao_db, empresa)
+    motor, cliente = _montar_motor(criar_sessao_db, empresa, _juridico_vivo)
 
     await motor.rodar()
     await cliente.fechar()
@@ -189,14 +194,14 @@ async def test_com_o_juridico_no_ar_tudo_chega_durante_a_conversa(
 
 
 @pytest.mark.asyncio
-async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
+async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db, empresa):
     """A regra mudou em 27/08/2026: ninguem e escolhido.
 
     A reuniao vira tarefa parada no nome do proprio usuario de servico, e quem
     tiver disponibilidade assume. Indicar um consultor aqui voltaria a prometer
     uma pessoa que pode nao ser quem vai aparecer.
     """
-    await _semear(sessao_db)
+    await _semear(sessao_db, empresa)
     corpos: list[dict] = []
 
     def registrando(request):
@@ -206,7 +211,7 @@ async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
             corpos.append(json.loads(request.read().decode()))
         return _juridico_vivo(request)
 
-    motor, cliente = _montar_motor(criar_sessao_db, registrando)
+    motor, cliente = _montar_motor(criar_sessao_db, empresa, registrando)
     await motor.rodar()
     await cliente.fechar()
 
@@ -222,9 +227,9 @@ async def test_reuniao_vai_como_tarefa_em_aberto(sessao_db, criar_sessao_db):
 
 @pytest.mark.asyncio
 async def test_qualificacao_leva_o_que_nao_tem_campo_no_juridico(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
-    await _semear(sessao_db)
+    await _semear(sessao_db, empresa)
     observacoes: list[str] = []
 
     def registrando(request):
@@ -234,7 +239,7 @@ async def test_qualificacao_leva_o_que_nao_tem_campo_no_juridico(
             observacoes.append(json.loads(request.read().decode())["conteudo"])
         return _juridico_vivo(request)
 
-    motor, cliente = _montar_motor(criar_sessao_db, registrando)
+    motor, cliente = _montar_motor(criar_sessao_db, empresa, registrando)
     await motor.rodar()
     await cliente.fechar()
 
@@ -259,51 +264,97 @@ def _sessionmaker_de_mentira():
     )
 
 
-def test_cli_desligado_usa_o_noop():
+def _empresa_de(**campos):
+    """Uma empresa fora do banco. Estes testes exercitam so a fiacao."""
+    padrao = {
+        "id": uuid.uuid4(),
+        "slug": "acme",
+        "nome": "Acme Assessoria",
+        "nome_curto": "Acme",
+        "whatsapp_numero": None,
+        "juridico_ativo": False,
+        "juridico_base_url": "",
+        "juridico_token": "",
+    }
+    return EmpresaCtx(**{**padrao, **campos})
+
+
+# Quem decide o destino dos eventos e a credencial DA EMPRESA, e nao mais uma
+# credencial global: cada instalacao do juridico e uma empresa, e um retorno para
+# a global entregaria o dado de uma com a credencial de outra.
+
+
+def test_cli_empresa_sem_integracao_usa_o_noop():
     from app.cli import montar_motor
     from app.config import Configuracao
     from app.crm import CrmSinkNoop
 
-    motor, cliente = montar_motor(
-        _sessionmaker_de_mentira(), ScriptedAdapter([]), Configuracao(juridico_ativo=False)
+    motor, deps = montar_motor(
+        _sessionmaker_de_mentira(),
+        ScriptedAdapter([]),
+        Configuracao(juridico_ativo=True),
+        _empresa_de(juridico_ativo=False),
     )
-    assert cliente is None
     assert isinstance(motor._crm, CrmSinkNoop)
     assert motor._entregador is None
 
 
-def test_cli_ligado_usa_a_fila():
+def test_cli_empresa_integrada_usa_a_fila():
     from app.cli import montar_motor
     from app.config import Configuracao
 
-    motor, cliente = montar_motor(
+    empresa = _empresa_de(
+        juridico_ativo=True,
+        juridico_base_url="https://juridico.exemplo",
+        juridico_token="token-de-teste",
+    )
+    motor, deps = montar_motor(
         _sessionmaker_de_mentira(),
         ScriptedAdapter([]),
-        Configuracao(
-            juridico_ativo=True,
-            juridico_token="token-de-teste",
-            juridico_base_url="https://juridico.exemplo",
-        ),
+        Configuracao(juridico_ativo=True),
+        empresa,
     )
-    assert cliente is not None
     assert isinstance(motor._crm, CrmSinkOutbox)
     assert motor._entregador is not None
+    # A fila precisa saber para QUAL juridico o item vai.
+    assert motor._crm._empresa_id == empresa.id
 
 
-def test_cli_ligado_sem_credencial_cai_no_noop():
-    # Marcar ativo=true e esquecer o token nao pode virar erro no meio de um
-    # atendimento: vira integracao desligada, e a Marina segue funcionando.
-    #
-    # O token vazio e passado EXPLICITAMENTE: sem isso o teste lia o .env da
-    # maquina e passava ou falhava conforme quem estivesse rodando.
+def test_cli_empresa_sem_credencial_cai_no_noop():
+    # Marcar a empresa como integrada e esquecer a credencial nao pode virar erro
+    # no meio de um atendimento: vira integracao desligada, e a Marina segue.
     from app.cli import montar_motor
     from app.config import Configuracao
     from app.crm import CrmSinkNoop
 
-    motor, cliente = montar_motor(
+    motor, deps = montar_motor(
         _sessionmaker_de_mentira(),
         ScriptedAdapter([]),
-        Configuracao(juridico_ativo=True, juridico_token=""),
+        Configuracao(juridico_ativo=True),
+        _empresa_de(
+            juridico_ativo=True,
+            juridico_base_url="https://juridico.exemplo",
+            juridico_token="",
+        ),
     )
-    assert cliente is None
+    assert isinstance(motor._crm, CrmSinkNoop)
+    assert motor._entregador is None
+
+
+def test_a_chave_geral_desliga_todas_as_empresas():
+    """`JURIDICO_ATIVO=false` e o desligamento de emergencia, nao o botao do dia a dia."""
+    from app.cli import montar_motor
+    from app.config import Configuracao
+    from app.crm import CrmSinkNoop
+
+    motor, deps = montar_motor(
+        _sessionmaker_de_mentira(),
+        ScriptedAdapter([]),
+        Configuracao(juridico_ativo=False),
+        _empresa_de(
+            juridico_ativo=True,
+            juridico_base_url="https://juridico.exemplo",
+            juridico_token="token-de-teste",
+        ),
+    )
     assert isinstance(motor._crm, CrmSinkNoop)

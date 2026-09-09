@@ -17,7 +17,8 @@ from sqlalchemy.sql import text
 
 from app.aio import loop_factory
 from app.config import obter_configuracao
-from app.models import Base
+from app.empresas import EmpresaCtx, por_id
+from app.models import Base, Empresa
 
 BANCO_TESTE = "marina_test"
 
@@ -102,3 +103,55 @@ async def sessao_db(engine_teste):
 async def criar_sessao_db(engine_teste, sessao_db):
     """Fabrica de sessoes independentes, para testar concorrencia de verdade."""
     return async_sessionmaker(engine_teste, expire_on_commit=False)
+
+
+# --- empresas -------------------------------------------------------------
+#
+# A Marina atende varias empresas, e cada uma corresponde a uma instalacao do
+# juridico. Quase todo teste com banco precisa de uma para pendurar os dados.
+
+
+async def _criar_empresa(sessao, **campos) -> EmpresaCtx:
+    linha = Empresa(**campos)
+    sessao.add(linha)
+    await sessao.commit()
+    await sessao.refresh(linha)
+    return await por_id(sessao, linha.id)
+
+
+@pytest_asyncio.fixture
+async def empresa(sessao_db) -> EmpresaCtx:
+    """A empresa dos testes.
+
+    O nome e exatamente o que hoje esta escrito na copy, de proposito: e o que faz
+    a transcricao de referencia do e2e continuar batendo byte a byte quando o nome
+    deixar de ser texto fixo e virar valor. Se ela mudar, e defeito de mapeamento —
+    regravar o snapshot esconderia o defeito.
+
+    O numero e o mesmo que os testes de webhook ja mandam no campo `To`.
+    """
+    return await _criar_empresa(
+        sessao_db,
+        slug="leve",
+        nome="Leve Soluções Financeiras e Empresariais",
+        nome_curto="Leve",
+        whatsapp_numero="+14155238886",
+        juridico_ativo=False,
+        juridico_base_url="",
+        juridico_token_env="",
+    )
+
+
+@pytest_asyncio.fixture
+async def outra_empresa(sessao_db, empresa) -> EmpresaCtx:
+    """A segunda empresa. So existe para provar que uma nao alcanca a outra."""
+    return await _criar_empresa(
+        sessao_db,
+        slug="acme",
+        nome="Acme Assessoria Juridica",
+        nome_curto="Acme",
+        whatsapp_numero="+14155230000",
+        juridico_ativo=False,
+        juridico_base_url="",
+        juridico_token_env="",
+    )

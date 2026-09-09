@@ -26,11 +26,14 @@ def txt(valor):
     return InboundMessage(texto=valor)
 
 
-async def semear_consultores(sessao, quantos=1):
+async def semear_consultores(sessao, empresa, quantos=1):
     nomes = ["Ana Ribeiro", "Bruno Tavares", "Carla Monteiro"][:quantos]
     for nome in nomes:
         consultor = Consultor(
-            nome=nome, email=f"{nome.split()[0].lower()}@exemplo.com.br", ativo=True
+            empresa_id=empresa.id,
+            nome=nome,
+            email=f"{nome.split()[0].lower()}@exemplo.com.br",
+            ativo=True,
         )
         sessao.add(consultor)
         await sessao.flush()
@@ -39,6 +42,7 @@ async def semear_consultores(sessao, quantos=1):
 
             sessao.add(
                 RegraDisponibilidade(
+                    empresa_id=empresa.id,
                     consultor_id=consultor.id,
                     dia_semana=dia,
                     hora_inicio=time(9, 0),
@@ -50,11 +54,12 @@ async def semear_consultores(sessao, quantos=1):
     await sessao.commit()
 
 
-def montar_engine(criar_sessao, entradas, armazenamento=None, agora=AGORA):
+def montar_engine(criar_sessao, empresa, entradas, armazenamento=None, agora=AGORA):
     adaptador = ScriptedAdapter(entradas)
     motor = Engine(
         criar_sessao=criar_sessao,
         adaptador=adaptador,
+        empresa=empresa,
         armazenamento=armazenamento,
         relogio=lambda: agora,
     )
@@ -90,9 +95,9 @@ CAMINHO_SO_EMAIL = [
 
 
 @pytest.mark.asyncio
-async def test_caminho_feliz_agenda_e_grava_tudo(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(criar_sessao_db, CAMINHO_FELIZ)
+async def test_caminho_feliz_agenda_e_grava_tudo(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa, CAMINHO_FELIZ)
 
     conversa_id = await motor.rodar()
 
@@ -124,11 +129,11 @@ async def test_caminho_feliz_agenda_e_grava_tudo(sessao_db, criar_sessao_db):
 
 @pytest.mark.asyncio
 async def test_lead_nasce_so_com_email_quando_o_telefone_nao_sai(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
     """Um contato basta — e este e o caminho que antes virava escalonamento."""
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(criar_sessao_db, CAMINHO_SO_EMAIL)
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa, CAMINHO_SO_EMAIL)
 
     conversa_id = await motor.rodar()
 
@@ -147,11 +152,10 @@ async def test_lead_nasce_so_com_email_quando_o_telefone_nao_sai(
 
 @pytest.mark.asyncio
 async def test_fonte_incompreensivel_nao_trava_o_atendimento(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -176,10 +180,10 @@ async def test_fonte_incompreensivel_nao_trava_o_atendimento(
 
 
 @pytest.mark.asyncio
-async def test_lead_so_nasce_depois_do_telefone(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
+async def test_lead_so_nasce_depois_do_telefone(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
     # Para depois do nome: nenhum lead deve existir ainda.
-    motor, _ = montar_engine(criar_sessao_db, [txt("Pedro Guerra")])
+    motor, _ = montar_engine(criar_sessao_db, empresa, [txt("Pedro Guerra")])
     await motor.rodar()
 
     leads = (await sessao_db.execute(select(Lead))).scalars().all()
@@ -191,9 +195,9 @@ async def test_lead_so_nasce_depois_do_telefone(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_transcricao_registra_entrada_e_saida(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, _ = montar_engine(criar_sessao_db, CAMINHO_FELIZ)
+async def test_transcricao_registra_entrada_e_saida(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, _ = montar_engine(criar_sessao_db, empresa, CAMINHO_FELIZ)
     conversa_id = await motor.rodar()
 
     mensagens = (
@@ -221,9 +225,9 @@ async def test_transcricao_registra_entrada_e_saida(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_contexto_persistido_nao_leva_lixo_transitorio(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, _ = montar_engine(criar_sessao_db, CAMINHO_FELIZ)
+async def test_contexto_persistido_nao_leva_lixo_transitorio(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, _ = montar_engine(criar_sessao_db, empresa, CAMINHO_FELIZ)
     conversa_id = await motor.rodar()
 
     conversa = await sessao_db.get(Conversa, conversa_id)
@@ -234,10 +238,9 @@ async def test_contexto_persistido_nao_leva_lixo_transitorio(sessao_db, criar_se
 
 
 @pytest.mark.asyncio
-async def test_voltar_funciona_ponta_a_ponta(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+async def test_voltar_funciona_ponta_a_ponta(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -253,10 +256,9 @@ async def test_voltar_funciona_ponta_a_ponta(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_sair_registra_opt_out(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(
-        criar_sessao_db, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
+async def test_sair_registra_opt_out(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
     )
     await motor.rodar()
 
@@ -267,25 +269,23 @@ async def test_sair_registra_opt_out(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_sair_antes_do_telefone_nao_suja_a_lista(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, _ = montar_engine(criar_sessao_db, [txt("sair")])
+async def test_sair_antes_do_telefone_nao_suja_a_lista(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, _ = montar_engine(criar_sessao_db, empresa, [txt("sair")])
     await motor.rodar()
     assert (await sessao_db.execute(select(OptOut))).scalars().all() == []
 
 
 @pytest.mark.asyncio
-async def test_lead_que_volta_e_reconhecido(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
+async def test_lead_que_volta_e_reconhecido(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
 
-    primeiro, _ = montar_engine(
-        criar_sessao_db, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
+    primeiro, _ = montar_engine(criar_sessao_db, empresa, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
     )
     await primeiro.rodar()
 
     # Volta depois do SAIR: precisa confirmar antes de continuar.
-    segundo, adaptador = montar_engine(
-        criar_sessao_db,
+    segundo, adaptador = montar_engine(criar_sessao_db, empresa,
         [txt("Pedro Guerra"), txt("11 98765-4321")],
         agora=AGORA + timedelta(hours=1),
     )
@@ -297,15 +297,13 @@ async def test_lead_que_volta_e_reconhecido(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_retomar_opt_out_revoga_o_registro(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    primeiro, _ = montar_engine(
-        criar_sessao_db, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
+async def test_retomar_opt_out_revoga_o_registro(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    primeiro, _ = montar_engine(criar_sessao_db, empresa, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
     )
     await primeiro.rodar()
 
-    segundo, _ = montar_engine(
-        criar_sessao_db,
+    segundo, _ = montar_engine(criar_sessao_db, empresa,
         [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sim")],
         agora=AGORA + timedelta(hours=1),
     )
@@ -316,15 +314,13 @@ async def test_retomar_opt_out_revoga_o_registro(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_nome_divergente_nao_sobrescreve_o_cadastro(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    primeiro, _ = montar_engine(
-        criar_sessao_db, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
+async def test_nome_divergente_nao_sobrescreve_o_cadastro(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    primeiro, _ = montar_engine(criar_sessao_db, empresa, [txt("Pedro Guerra"), txt("11 98765-4321"), txt("sair")]
     )
     await primeiro.rodar()
 
-    segundo, _ = montar_engine(
-        criar_sessao_db,
+    segundo, _ = montar_engine(criar_sessao_db, empresa,
         [txt("Pedr Guera"), txt("11 98765-4321"), txt("nao")],
         agora=AGORA + timedelta(hours=1),
     )
@@ -339,9 +335,9 @@ async def test_nome_divergente_nao_sobrescreve_o_cadastro(sessao_db, criar_sessa
 
 @pytest.mark.asyncio
 async def test_documento_e_arquivado_e_registrado(
-    sessao_db, criar_sessao_db, tmp_path, monkeypatch
+    sessao_db, criar_sessao_db, tmp_path, monkeypatch, empresa
 ):
-    await semear_consultores(sessao_db)
+    await semear_consultores(sessao_db, empresa)
 
     origem = tmp_path / "contrato.pdf"
     origem.write_bytes(b"%PDF-1.4 conteudo de teste")
@@ -351,8 +347,7 @@ async def test_documento_e_arquivado_e_registrado(
     config = Configuracao(storage_dir=str(tmp_path / "guardados"))
     armazenamento = LocalDocumentStorage(config)
 
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -385,10 +380,9 @@ async def test_documento_e_arquivado_e_registrado(
 
 
 @pytest.mark.asyncio
-async def test_sem_consultor_nenhum_escala_para_humano(sessao_db, criar_sessao_db):
+async def test_sem_consultor_nenhum_escala_para_humano(sessao_db, criar_sessao_db, empresa):
     # Nenhum consultor semeado: nao ha horario possivel.
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -405,10 +399,9 @@ async def test_sem_consultor_nenhum_escala_para_humano(sessao_db, criar_sessao_d
 
 
 @pytest.mark.asyncio
-async def test_horario_ofertado_respeita_antecedencia(sessao_db, criar_sessao_db):
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+async def test_horario_ofertado_respeita_antecedencia(sessao_db, criar_sessao_db, empresa):
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -429,11 +422,10 @@ async def test_horario_ofertado_respeita_antecedencia(sessao_db, criar_sessao_db
 
 @pytest.mark.asyncio
 async def test_slots_mesclam_as_agendas_sem_atribuir_ninguem(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
-    await semear_consultores(sessao_db, quantos=3)
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+    await semear_consultores(sessao_db, empresa, quantos=3)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),
@@ -460,13 +452,12 @@ async def test_slots_mesclam_as_agendas_sem_atribuir_ninguem(
 
 @pytest.mark.asyncio
 async def test_caminho_errado_diz_o_que_houve_em_vez_de_nao_entendi(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
     """Regressao do teste real do Pedro: duas tentativas de enviar arquivo
     viraram "não entendi", e a terceira teria escalado para um humano."""
-    await semear_consultores(sessao_db)
-    motor, adaptador = montar_engine(
-        criar_sessao_db,
+    await semear_consultores(sessao_db, empresa)
+    motor, adaptador = montar_engine(criar_sessao_db, empresa,
         [
             txt("Pedro Guerra"),
             txt("11 98765-4321"),

@@ -43,13 +43,16 @@ ROTEIRO = [
 ]
 
 
-async def _semear(sessao):
-    consultor = Consultor(nome="Ana Ribeiro", email="ana@exemplo.com.br", ativo=True)
+async def _semear(sessao, empresa):
+    consultor = Consultor(
+        empresa_id=empresa.id, nome="Ana Ribeiro", email="ana@exemplo.com.br", ativo=True
+    )
     sessao.add(consultor)
     await sessao.flush()
     for dia in range(0, 5):
         sessao.add(
             RegraDisponibilidade(
+                empresa_id=empresa.id,
                 consultor_id=consultor.id,
                 dia_semana=dia,
                 hora_inicio=time(9, 0),
@@ -75,11 +78,12 @@ def _formatar(mensagens) -> str:
 
 
 @pytest.mark.asyncio
-async def test_transcricao_do_caminho_feliz(sessao_db, criar_sessao_db):
-    await _semear(sessao_db)
+async def test_transcricao_do_caminho_feliz(sessao_db, criar_sessao_db, empresa):
+    await _semear(sessao_db, empresa)
 
     motor = Engine(
         criar_sessao=criar_sessao_db,
+        empresa=empresa,
         adaptador=ScriptedAdapter([InboundMessage(texto=t) for t in ROTEIRO]),
         relogio=lambda: AGORA,
     )
@@ -111,15 +115,16 @@ async def test_transcricao_do_caminho_feliz(sessao_db, criar_sessao_db):
 
 
 @pytest.mark.asyncio
-async def test_a_marina_nunca_fala_de_dinheiro(sessao_db, criar_sessao_db):
+async def test_a_marina_nunca_fala_de_dinheiro(sessao_db, criar_sessao_db, empresa):
     """Guardrail de compliance lido na transcricao inteira, nao template a template.
 
     Se alguem colocar um numero na copy — um percentual, um valor — ele aparece
     aqui, em qualquer mensagem do fluxo.
     """
-    await _semear(sessao_db)
+    await _semear(sessao_db, empresa)
     motor = Engine(
         criar_sessao=criar_sessao_db,
+        empresa=empresa,
         adaptador=ScriptedAdapter(
             [InboundMessage(texto=t) for t in ["Pedro Guerra", "quanto vou receber?", "sair"]]
         ),

@@ -38,6 +38,7 @@ from app.channels.base import ChannelAdapter, InboundMessage, MensagemSaida
 from app.config import Configuracao, obter_configuracao
 from app.crm import CrmSink, CrmSinkNoop
 from app.datas import data_extenso, data_iso, hora
+from app.empresas import EmpresaCtx
 from app.enums import ESTADOS_INTERNOS, ESTADOS_TERMINAIS, Direcao, Estado
 from app.logging import obter_logger
 from app.machine import (
@@ -98,6 +99,8 @@ class Engine:
         self,
         criar_sessao: async_sessionmaker[AsyncSession],
         adaptador: ChannelAdapter,
+        *,
+        empresa: EmpresaCtx,
         catalogo: CatalogoMensagens | None = None,
         config: Configuracao | None = None,
         armazenamento: ArmazenamentoDocumento | None = None,
@@ -107,6 +110,10 @@ class Engine:
     ) -> None:
         self._criar_sessao = criar_sessao
         self._adaptador = adaptador
+        #: Por qual empresa este atendimento acontece. Obrigatoria e sem padrao:
+        #: "qualquer empresa" e o defeito que a separacao por empresa existe para
+        #: eliminar, e um padrao o traria de volta com cara de conveniencia.
+        self._empresa = empresa
         self._catalogo = catalogo or obter_catalogo()
         self._config = config or obter_configuracao()
         self._armazenamento = armazenamento
@@ -203,7 +210,9 @@ class Engine:
         processo nao fica preso a ninguem. Cada chamada e um passo da conversa
         daquela identidade — milhares delas podem correr em paralelo.
         """
-        async with self._trava(identidade):
+        # A chave inclui a empresa: a mesma pessoa falando com duas empresas tem
+        # duas conversas independentes, e uma nao pode esperar pela outra.
+        async with self._trava(f"{self._empresa.id}:{identidade}"):
             execucao, nova = await self._localizar_ou_abrir(identidade)
             await self._registrar_entrada(execucao, entrada)
             # Conversa recem-nascida: a mensagem que a abriu dispara a saudacao e
@@ -349,6 +358,7 @@ class Engine:
     async def _abrir(self, identidade: str | None = None) -> Execucao:
         async with self._criar_sessao() as sessao:
             conversa = Conversa(
+                empresa_id=self._empresa.id,
                 canal=self._adaptador.canal,
                 identidade_externa=identidade,
                 estado=Estado.INICIO.value,
@@ -519,6 +529,7 @@ class Engine:
                 # Lead novo: nasce agora, com o consentimento carimbado na hora em
                 # que foi dado (na saudacao), nao neste instante.
                 lead = Lead(
+                    empresa_id=self._empresa.id,
                     telefone_e164=efeito.telefone,
                     nome=efeito.nome,
                     email=efeito.email,
@@ -715,7 +726,12 @@ class Engine:
             return
         async with self._criar_sessao() as sessao:
             sessao.add(
-                OptOut(telefone_e164=telefone, email=email, motivo=efeito.motivo)
+                OptOut(
+                    empresa_id=self._empresa.id,
+                    telefone_e164=telefone,
+                    email=email,
+                    motivo=efeito.motivo,
+                )
             )
             await sessao.commit()
         logger.info("opt_out_registrado", conversa_id=str(execucao.conversa_id))

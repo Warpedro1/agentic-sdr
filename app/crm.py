@@ -63,9 +63,16 @@ class CrmSinkOutbox:
     def __init__(
         self,
         criar_sessao: async_sessionmaker[AsyncSession],
+        empresa_id: uuid.UUID,
         relogio=None,
     ) -> None:
         self._criar_sessao = criar_sessao
+        #: A empresa e amarrada aqui, e nao passada em cada metodo: o sink ja nasce
+        #: por mensagem (o motor e montado a cada turno), entao custa nada — e os
+        #: tres metodos do contrato continuam sem parametro de destino. A
+        #: alternativa, enfiar a empresa no dicionario de dados, faria uma coluna do
+        #: banco ser lida de uma chave magica.
+        self._empresa_id = empresa_id
         #: Sem relógio, a linha nasce com o `now()` do Postgres, que é o certo em
         #: produção. Quem controla o tempo — os testes — precisa poder informá-lo:
         #: senão o item nasce na hora real e uma drenagem com relógio congelado
@@ -80,6 +87,7 @@ class CrmSinkOutbox:
                     sessao,
                     tipo,
                     payload,
+                    empresa_id=self._empresa_id,
                     lead_id=uuid.UUID(str(lead_id)) if lead_id else None,
                     agora=self._relogio() if self._relogio else None,
                 )

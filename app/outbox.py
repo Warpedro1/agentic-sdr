@@ -53,11 +53,20 @@ async def enfileirar(
     sessao: AsyncSession,
     tipo: TipoEnvio,
     payload: dict,
+    *,
+    empresa_id: uuid.UUID,
     lead_id: uuid.UUID | None = None,
     agora: datetime | None = None,
 ) -> uuid.UUID:
+    """Grava a intencao de entrega. `empresa_id` diz para QUAL juridico ela vai.
+
+    Obrigatorio e nomeado de proposito: cada empresa tem a sua instalacao do
+    juridico, e um item sem destino seria entregue por quem drenar primeiro — no
+    CRM da empresa errada.
+    """
     item = CrmOutbox(
         tipo=tipo.value,
+        empresa_id=empresa_id,
         lead_id=lead_id,
         payload=payload,
         tentativas=0,

@@ -39,11 +39,12 @@ class AdaptadorDeEmpurrao:
         self.enviadas.append(mensagem)
 
 
-def montar(criar_sessao, agora=AGORA) -> tuple[Engine, AdaptadorDeEmpurrao]:
+def montar(criar_sessao, empresa, agora=AGORA) -> tuple[Engine, AdaptadorDeEmpurrao]:
     adaptador = AdaptadorDeEmpurrao()
     motor = Engine(
         criar_sessao=criar_sessao,
         adaptador=adaptador,
+        empresa=empresa,
         config=Configuracao(juridico_ativo=False),
         relogio=lambda: agora,
     )
@@ -55,8 +56,8 @@ def txt(valor: str) -> InboundMessage:
 
 
 @pytest.mark.asyncio
-async def test_primeira_mensagem_abre_a_conversa_e_so_saúda(sessao_db, criar_sessao_db):
-    motor, adaptador = montar(criar_sessao_db)
+async def test_primeira_mensagem_abre_a_conversa_e_so_saúda(sessao_db, criar_sessao_db, empresa):
+    motor, adaptador = montar(criar_sessao_db, empresa)
     conversa_id = await motor.atender(TELEFONE, txt("oi"))
 
     conversa = await sessao_db.get(Conversa, conversa_id)
@@ -89,8 +90,8 @@ async def test_primeira_mensagem_abre_a_conversa_e_so_saúda(sessao_db, criar_se
 
 
 @pytest.mark.asyncio
-async def test_mensagens_seguintes_avancam_a_mesma_conversa(sessao_db, criar_sessao_db):
-    motor, _ = montar(criar_sessao_db)
+async def test_mensagens_seguintes_avancam_a_mesma_conversa(sessao_db, criar_sessao_db, empresa):
+    motor, _ = montar(criar_sessao_db, empresa)
     for texto in ["oi", "Pedro Guerra", "11 98765-4321"]:
         conversa_id = await motor.atender(TELEFONE, txt(texto))
 
@@ -116,14 +117,14 @@ async def test_mensagens_seguintes_avancam_a_mesma_conversa(sessao_db, criar_ses
 
 
 @pytest.mark.asyncio
-async def test_consentimento_sobrevive_a_reidratacao(sessao_db, criar_sessao_db):
+async def test_consentimento_sobrevive_a_reidratacao(sessao_db, criar_sessao_db, empresa):
     """O JSONB devolve texto; a coluna do lead quer data.
 
     O consentimento é carimbado na saudação e só é usado duas mensagens depois,
     quando o lead nasce. No terminal ele ficava na memória do laço; aqui passa
     pelo banco e volta como string.
     """
-    motor, _ = montar(criar_sessao_db)
+    motor, _ = montar(criar_sessao_db, empresa)
     for texto in ["oi", "Pedro Guerra", "11 98765-4321"]:
         await motor.atender(TELEFONE, txt(texto))
 
@@ -132,8 +133,8 @@ async def test_consentimento_sobrevive_a_reidratacao(sessao_db, criar_sessao_db)
 
 
 @pytest.mark.asyncio
-async def test_conversa_encerrada_nao_recebe_mensagem_nova(sessao_db, criar_sessao_db):
-    motor, _ = montar(criar_sessao_db)
+async def test_conversa_encerrada_nao_recebe_mensagem_nova(sessao_db, criar_sessao_db, empresa):
+    motor, _ = montar(criar_sessao_db, empresa)
     primeira = await motor.atender(TELEFONE, txt("oi"))
 
     # SAIR encerra por opt-out.
@@ -146,13 +147,13 @@ async def test_conversa_encerrada_nao_recebe_mensagem_nova(sessao_db, criar_sess
 
 
 @pytest.mark.asyncio
-async def test_conversa_parada_ha_tempo_demais_recomeca(sessao_db, criar_sessao_db):
-    motor, _ = montar(criar_sessao_db)
+async def test_conversa_parada_ha_tempo_demais_recomeca(sessao_db, criar_sessao_db, empresa):
+    motor, _ = montar(criar_sessao_db, empresa)
     primeira = await motor.atender(TELEFONE, txt("oi"))
 
     # Um dia e meio depois: retomar no meio de uma pergunta, sem contexto
     # nenhum, é pior do que começar de novo.
-    depois, _ = montar(criar_sessao_db, agora=AGORA + timedelta(hours=36))
+    depois, _ = montar(criar_sessao_db, empresa, agora=AGORA + timedelta(hours=36))
     segunda = await depois.atender(TELEFONE, txt("oi"))
 
     assert segunda != primeira
@@ -161,19 +162,19 @@ async def test_conversa_parada_ha_tempo_demais_recomeca(sessao_db, criar_sessao_
 
 
 @pytest.mark.asyncio
-async def test_dentro_da_janela_a_conversa_continua(sessao_db, criar_sessao_db):
-    motor, _ = montar(criar_sessao_db)
+async def test_dentro_da_janela_a_conversa_continua(sessao_db, criar_sessao_db, empresa):
+    motor, _ = montar(criar_sessao_db, empresa)
     primeira = await motor.atender(TELEFONE, txt("oi"))
 
-    depois, _ = montar(criar_sessao_db, agora=AGORA + timedelta(hours=12))
+    depois, _ = montar(criar_sessao_db, empresa, agora=AGORA + timedelta(hours=12))
     segunda = await depois.atender(TELEFONE, txt("Pedro Guerra"))
 
     assert segunda == primeira
 
 
 @pytest.mark.asyncio
-async def test_numeros_diferentes_sao_conversas_diferentes(sessao_db, criar_sessao_db):
-    motor, _ = montar(criar_sessao_db)
+async def test_numeros_diferentes_sao_conversas_diferentes(sessao_db, criar_sessao_db, empresa):
+    motor, _ = montar(criar_sessao_db, empresa)
     uma = await motor.atender(TELEFONE, txt("oi"))
     outra = await motor.atender("+5511900000000", txt("oi"))
 
@@ -183,14 +184,14 @@ async def test_numeros_diferentes_sao_conversas_diferentes(sessao_db, criar_sess
 
 
 @pytest.mark.asyncio
-async def test_duas_mensagens_juntas_nao_duplicam_a_conversa(sessao_db, criar_sessao_db):
+async def test_duas_mensagens_juntas_nao_duplicam_a_conversa(sessao_db, criar_sessao_db, empresa):
     """A corrida que só existe num canal de push.
 
     Duas mensagens do mesmo número chegando ao mesmo tempo: sem a trava, cada uma
     abriria a sua conversa, ou uma sobrescreveria o estado da outra.
     """
-    primeiro, _ = montar(criar_sessao_db)
-    segundo, _ = montar(criar_sessao_db)
+    primeiro, _ = montar(criar_sessao_db, empresa)
+    segundo, _ = montar(criar_sessao_db, empresa)
 
     resultados = await asyncio.gather(
         primeiro.atender(TELEFONE, txt("oi")),
@@ -217,7 +218,7 @@ async def test_duas_mensagens_juntas_nao_duplicam_a_conversa(sessao_db, criar_se
 
 @pytest.mark.asyncio
 async def test_retomada_volta_ao_estado_exato_da_conversa_anterior(
-    sessao_db, criar_sessao_db
+    sessao_db, criar_sessao_db, empresa
 ):
     """`reconhecimento` é transitório, e a retomada o lê depois de esperar.
 
@@ -226,6 +227,7 @@ async def test_retomada_volta_ao_estado_exato_da_conversa_anterior(
     genérico de coleta em vez de voltar onde parou.
     """
     lead = Lead(
+        empresa_id=empresa.id,
         telefone_e164=TELEFONE,
         nome="Pedro Guerra",
         fonte="indicacao",
@@ -237,6 +239,7 @@ async def test_retomada_volta_ao_estado_exato_da_conversa_anterior(
     await sessao_db.flush()
     sessao_db.add(
         Conversa(
+            empresa_id=empresa.id,
             lead_id=lead.id,
             canal="whatsapp",
             estado=Estado.AGUARDANDO_TIPO_CONTRATO.value,
@@ -248,7 +251,7 @@ async def test_retomada_volta_ao_estado_exato_da_conversa_anterior(
     )
     await sessao_db.commit()
 
-    motor, _ = montar(criar_sessao_db)
+    motor, _ = montar(criar_sessao_db, empresa)
     for texto in ["oi", "Pedro Guerra", "11 98765-4321"]:
         conversa_id = await motor.atender(TELEFONE, txt(texto))
 

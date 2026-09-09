@@ -16,10 +16,10 @@ from sqlalchemy import func, select
 from twilio.request_validator import RequestValidator
 
 from app.channels.whatsapp_twilio import TwilioWhatsApp
-from app.composicao import Dependencias
+from app.composicao import Dependencias, RegistroIntegracoes
 from app.config import Configuracao
 from app.crm import CrmSinkNoop
-from app.models import Conversa, Mensagem, MensagemRecebida
+from app.models import Conversa, Empresa, Mensagem, MensagemRecebida
 from app.storage.local import LocalDocumentStorage
 from app.web.assinatura import url_do_webhook
 from app.web.webhook import criar_app
@@ -78,7 +78,7 @@ def montar_app(criar_sessao, config: Configuracao = CONFIG, handler=None):
         config=config,
         criar_sessao=criar_sessao,
         armazenamento=LocalDocumentStorage(config),
-        crm=CrmSinkNoop(),
+        integracoes=RegistroIntegracoes(criar_sessao, config),
     )
     app = criar_app(deps, TwilioWhatsApp(config, http))
     return app, enviadas
@@ -141,7 +141,7 @@ async def test_assinatura_de_outro_corpo_e_403():
 
 
 @pytest.mark.asyncio
-async def test_primeira_mensagem_abre_a_conversa_e_responde(sessao_db, criar_sessao_db):
+async def test_primeira_mensagem_abre_a_conversa_e_responde(sessao_db, criar_sessao_db, empresa):
     app, enviadas = montar_app(criar_sessao_db)
     form = formulario()
 
@@ -160,7 +160,7 @@ async def test_primeira_mensagem_abre_a_conversa_e_responde(sessao_db, criar_ses
 
 
 @pytest.mark.asyncio
-async def test_message_sid_repetido_nao_vira_dois_passos(sessao_db, criar_sessao_db):
+async def test_message_sid_repetido_nao_vira_dois_passos(sessao_db, criar_sessao_db, empresa):
     app, enviadas = montar_app(criar_sessao_db)
     form = formulario()
 
@@ -177,7 +177,7 @@ async def test_message_sid_repetido_nao_vira_dois_passos(sessao_db, criar_sessao
 
 
 @pytest.mark.asyncio
-async def test_segunda_mensagem_avanca_a_mesma_conversa(sessao_db, criar_sessao_db):
+async def test_segunda_mensagem_avanca_a_mesma_conversa(sessao_db, criar_sessao_db, empresa):
     app, enviadas = montar_app(criar_sessao_db)
 
     async with cliente_de(app) as cliente:
@@ -229,3 +229,87 @@ async def test_saude_responde_sem_assinatura(sessao_db, criar_sessao_db):
     async with cliente_de(app) as cliente:
         resposta = await cliente.get("/saude")
     assert resposta.status_code == 200
+
+
+# --- de quem e a mensagem ---------------------------------------------------
+#
+# Cada empresa tem o seu numero. O campo `To` diz qual numero recebeu, e e por ele
+# que se descobre por qual empresa o atendimento acontece.
+
+
+@pytest.mark.asyncio
+async def test_a_mensagem_e_atribuida_a_empresa_do_numero_que_a_recebeu(
+    sessao_db, criar_sessao_db, empresa, outra_empresa
+):
+    """Duas empresas cadastradas; a conversa nasce na dona do numero de destino."""
+    app, _ = montar_app(criar_sessao_db)
+    form = formulario(To=f"whatsapp:{outra_empresa.whatsapp_numero}")
+
+    async with cliente_de(app) as cliente:
+        resposta = await cliente.post(CAMINHO, data=form, headers=assinar(form))
+        assert resposta.status_code == 204
+        await esperar_atendimento(app)
+
+    conversa = (await sessao_db.execute(select(Conversa))).scalar_one()
+    assert conversa.empresa_id == outra_empresa.id
+    assert conversa.empresa_id != empresa.id
+
+
+@pytest.mark.asyncio
+async def test_a_resposta_sai_pelo_numero_da_empresa(
+    sessao_db, criar_sessao_db, empresa, outra_empresa
+):
+    """Senao o lead recebe resposta de um numero para o qual nao escreveu."""
+    app, enviadas = montar_app(criar_sessao_db)
+    form = formulario(To=f"whatsapp:{outra_empresa.whatsapp_numero}")
+
+    async with cliente_de(app) as cliente:
+        await cliente.post(CAMINHO, data=form, headers=assinar(form))
+        await esperar_atendimento(app)
+
+    assert enviadas
+    assert all(
+        m["From"] == f"whatsapp:{outra_empresa.whatsapp_numero}" for m in enviadas
+    )
+
+
+@pytest.mark.asyncio
+async def test_numero_nao_cadastrado_nao_deixa_rastro(sessao_db, criar_sessao_db, empresa):
+    """Alguem apontou um numero para a Marina antes de cadastrar a empresa.
+
+    E estado de configuracao, nao falha: responde 204 para a operadora nao ficar
+    reentregando, e nao grava nada — nem a marca de idempotencia, que e por isso
+    que a atribuicao vem ANTES dela.
+    """
+    app, enviadas = montar_app(criar_sessao_db)
+    form = formulario(To="whatsapp:+15550009999")
+
+    async with cliente_de(app) as cliente:
+        resposta = await cliente.post(CAMINHO, data=form, headers=assinar(form))
+        assert resposta.status_code == 204
+        await esperar_atendimento(app)
+
+    assert await sessao_db.scalar(select(func.count()).select_from(Conversa)) == 0
+    assert await sessao_db.scalar(select(func.count()).select_from(MensagemRecebida)) == 0
+    assert enviadas == []
+
+
+@pytest.mark.asyncio
+async def test_empresa_desativada_deixa_de_ser_atendida(
+    sessao_db, criar_sessao_db, empresa
+):
+    """Desativar precisa parar o atendimento sem apagar o historico."""
+    linha = await sessao_db.get(Empresa, empresa.id)
+    linha.ativo = False
+    await sessao_db.commit()
+
+    app, enviadas = montar_app(criar_sessao_db)
+    form = formulario()
+
+    async with cliente_de(app) as cliente:
+        resposta = await cliente.post(CAMINHO, data=form, headers=assinar(form))
+        assert resposta.status_code == 204
+        await esperar_atendimento(app)
+
+    assert await sessao_db.scalar(select(func.count()).select_from(Conversa)) == 0
+    assert enviadas == []

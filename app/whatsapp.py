@@ -17,6 +17,7 @@ from app.channels.whatsapp_twilio import TwilioWhatsApp
 from app.composicao import montar_dependencias
 from app.config import obter_configuracao
 from app.db import encerrar, obter_engine
+from app.empresas import listar_ativas
 from app.logging import configurar_logging, obter_logger
 from app.web.webhook import criar_app
 
@@ -39,13 +40,25 @@ async def main() -> None:
     deps = montar_dependencias(criar_sessao, config)
     cliente = TwilioWhatsApp(config)
 
+    # Quais numeros estao de fato atendidos. Mensagem para numero fora desta lista
+    # e ignorada com aviso, e sem isto no boot a descoberta seria pelo log de uma
+    # mensagem perdida.
+    async with criar_sessao() as sessao:
+        empresas = await listar_ativas(sessao)
     logger.info(
         "whatsapp_iniciando",
         host=config.whatsapp_host,
         porta=config.whatsapp_porta,
         url_publica=config.twilio_url_publica,
-        remetente=config.twilio_remetente,
+        empresas=[
+            {"slug": e.slug, "numero": e.whatsapp_numero or "(sem numero)"}
+            for e in empresas
+        ],
     )
+    if not empresas:
+        logger.warning("nenhuma_empresa_cadastrada")
+    elif not any(e.whatsapp_numero for e in empresas):
+        logger.warning("nenhuma_empresa_com_numero")
 
     servidor = uvicorn.Server(
         uvicorn.Config(

@@ -50,8 +50,9 @@ def montar(criar_sessao, transport, max_tentativas=5, agora=AGORA):
     )
 
 
-async def _lead(sessao, telefone="+5511987654321", nome="Pedro Guerra"):
+async def _lead(sessao, empresa, telefone="+5511987654321", nome="Pedro Guerra"):
     lead = Lead(
+        empresa_id=empresa.id,
         telefone_e164=telefone,
         nome=nome,
         email="pedro@exemplo.com.br",
@@ -77,19 +78,21 @@ def _dados(lead):
     }
 
 
-async def _enfileirar(sessao, tipo, dados, lead_id):
+async def _enfileirar(sessao, empresa, tipo, dados, lead_id):
     # `agora=AGORA` importa: sem isso a linha nasce com o now() do Postgres, que
     # e a hora real, e a drenagem — que roda com relogio congelado no passado —
     # nao enxergaria nada como pendente.
-    return await enfileirar(sessao, tipo, dados, lead_id=lead_id, agora=AGORA)
+    return await enfileirar(
+        sessao, tipo, dados, empresa_id=empresa.id, lead_id=lead_id, agora=AGORA
+    )
 
 
 # --- caminho feliz ----------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_db):
-    lead = await _lead(sessao_db)
+async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_db, empresa):
+    lead = await _lead(sessao_db, empresa)
     dados = _dados(lead)
 
     chamadas: list[str] = []
@@ -98,10 +101,9 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
         chamadas.append(request.url.path)
         return httpx.Response(201, json={"id": 42})
 
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, dados, lead.id)
-    await _enfileirar(sessao_db, TipoEnvio.QUALIFICACAO, dados, lead.id)
-    await _enfileirar(
-        sessao_db,
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, dados, lead.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.QUALIFICACAO, dados, lead.id)
+    await _enfileirar(sessao_db, empresa,
         TipoEnvio.AGENDAMENTO,
         {**dados, "data_iso": "2026-09-03", "hora": "14:00"},
         lead.id,
@@ -125,8 +127,8 @@ async def test_entrega_lead_qualificacao_e_agendamento(sessao_db, criar_sessao_d
 
 
 @pytest.mark.asyncio
-async def test_lead_ja_enviado_nao_e_enviado_de_novo(sessao_db, criar_sessao_db):
-    lead = await _lead(sessao_db)
+async def test_lead_ja_enviado_nao_e_enviado_de_novo(sessao_db, criar_sessao_db, empresa):
+    lead = await _lead(sessao_db, empresa)
     lead.crm_lead_id = "ja-existe"
     await sessao_db.commit()
 
@@ -136,7 +138,7 @@ async def test_lead_ja_enviado_nao_e_enviado_de_novo(sessao_db, criar_sessao_db)
         criacoes["n"] += 1
         return httpx.Response(201, json={"id": 99})
 
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
@@ -150,15 +152,15 @@ async def test_lead_ja_enviado_nao_e_enviado_de_novo(sessao_db, criar_sessao_db)
 
 
 @pytest.mark.asyncio
-async def test_negociacao_ja_conhecida_conta_como_entrega(sessao_db, criar_sessao_db):
+async def test_negociacao_ja_conhecida_conta_como_entrega(sessao_db, criar_sessao_db, empresa):
     """O juridico devolve 200 quando reconhece a `referencia_externa`.
 
     Acontece quando a resposta anterior se perdeu no caminho: para ele o envio
     ja tinha chegado, e devolver a negociacao existente e a resposta certa. Aqui
     isso e entrega normal, nao falha — e o id gravado e o mesmo de antes.
     """
-    lead = await _lead(sessao_db)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+    lead = await _lead(sessao_db, empresa)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(
@@ -178,8 +180,8 @@ async def test_negociacao_ja_conhecida_conta_como_entrega(sessao_db, criar_sessa
 
 
 @pytest.mark.asyncio
-async def test_falha_no_lead_segura_os_itens_seguintes_dele(sessao_db, criar_sessao_db):
-    lead = await _lead(sessao_db)
+async def test_falha_no_lead_segura_os_itens_seguintes_dele(sessao_db, criar_sessao_db, empresa):
+    lead = await _lead(sessao_db, empresa)
     dados = _dados(lead)
 
     chamadas: list[str] = []
@@ -188,8 +190,8 @@ async def test_falha_no_lead_segura_os_itens_seguintes_dele(sessao_db, criar_ses
         chamadas.append(request.url.path)
         return httpx.Response(500, text="boom")
 
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, dados, lead.id)
-    await _enfileirar(sessao_db, TipoEnvio.AGENDAMENTO, dados, lead.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, dados, lead.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.AGENDAMENTO, dados, lead.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
@@ -204,9 +206,9 @@ async def test_falha_no_lead_segura_os_itens_seguintes_dele(sessao_db, criar_ses
 
 
 @pytest.mark.asyncio
-async def test_um_lead_travado_nao_trava_a_fila_de_outro(sessao_db, criar_sessao_db):
-    ruim = await _lead(sessao_db, telefone="+5511900000001", nome="Falha Certa")
-    bom = await _lead(sessao_db, telefone="+5511900000002", nome="Deve Passar")
+async def test_um_lead_travado_nao_trava_a_fila_de_outro(sessao_db, criar_sessao_db, empresa):
+    ruim = await _lead(sessao_db, empresa, telefone="+5511900000001", nome="Falha Certa")
+    bom = await _lead(sessao_db, empresa, telefone="+5511900000002", nome="Deve Passar")
 
     def rota(request):
         corpo = request.read().decode()
@@ -214,8 +216,8 @@ async def test_um_lead_travado_nao_trava_a_fila_de_outro(sessao_db, criar_sessao
             return httpx.Response(500, text="boom")
         return httpx.Response(201, json={"id": 11})
 
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(ruim), ruim.id)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(bom), bom.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(ruim), ruim.id)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(bom), bom.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(criar_sessao_db, transporte(**{NEGOCIACOES: rota}))
@@ -229,9 +231,9 @@ async def test_um_lead_travado_nao_trava_a_fila_de_outro(sessao_db, criar_sessao
 
 
 @pytest.mark.asyncio
-async def test_erro_temporario_agenda_nova_tentativa(sessao_db, criar_sessao_db):
-    lead = await _lead(sessao_db)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+async def test_erro_temporario_agenda_nova_tentativa(sessao_db, criar_sessao_db, empresa):
+    lead = await _lead(sessao_db, empresa)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(
@@ -248,11 +250,11 @@ async def test_erro_temporario_agenda_nova_tentativa(sessao_db, criar_sessao_db)
 
 
 @pytest.mark.asyncio
-async def test_erro_permanente_nao_fica_tentando_para_sempre(sessao_db, criar_sessao_db):
+async def test_erro_permanente_nao_fica_tentando_para_sempre(sessao_db, criar_sessao_db, empresa):
     # Um 422 de payload invalido nao melhora com repeticao: queima as tentativas
     # de uma vez e vira algo que uma pessoa precisa olhar.
-    lead = await _lead(sessao_db)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+    lead = await _lead(sessao_db, empresa)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     entregador, cliente = montar(
@@ -281,9 +283,9 @@ async def test_erro_permanente_nao_fica_tentando_para_sempre(sessao_db, criar_se
 
 
 @pytest.mark.asyncio
-async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sessao_db):
-    lead = await _lead(sessao_db)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sessao_db, empresa):
+    lead = await _lead(sessao_db, empresa)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     fora, cliente = montar(
@@ -310,7 +312,7 @@ async def test_juridico_volta_e_a_fila_entrega_o_que_ficou(sessao_db, criar_sess
 
 
 @pytest.mark.asyncio
-async def test_drenagens_simultaneas_nao_duplicam_o_lead(sessao_db, criar_sessao_db):
+async def test_drenagens_simultaneas_nao_duplicam_o_lead(sessao_db, criar_sessao_db, empresa):
     """Regressao de um defeito visto contra o juridico de verdade.
 
     A drenagem e disparada a cada marco da conversa, entao varias rodadas correm
@@ -320,8 +322,8 @@ async def test_drenagens_simultaneas_nao_duplicam_o_lead(sessao_db, criar_sessao
     """
     import asyncio
 
-    lead = await _lead(sessao_db)
-    await _enfileirar(sessao_db, TipoEnvio.LEAD, _dados(lead), lead.id)
+    lead = await _lead(sessao_db, empresa)
+    await _enfileirar(sessao_db, empresa, TipoEnvio.LEAD, _dados(lead), lead.id)
     await sessao_db.commit()
 
     criacoes = {"n": 0}

@@ -59,6 +59,10 @@ class EntradaWhatsApp:
     entrada: InboundMessage
     #: `MessageSid`. A chave de idempotencia: a Twilio pode entregar duas vezes.
     message_sid: str
+    #: O numero QUE RECEBEU a mensagem, E.164 sem prefixo. Cada empresa tem o seu,
+    #: entao e por aqui que se descobre por qual empresa este atendimento acontece.
+    #: So e confiavel depois de a assinatura ser conferida — ele vem no corpo.
+    destinatario: str = ""
     #: Nome do perfil no WhatsApp. Vai para o log e NAO substitui a pergunta do
     #: nome — a Marina pergunta, e o cadastro e o que ela apurou.
     profile_name: str | None = None
@@ -79,9 +83,11 @@ class TwilioWhatsApp:
     def _auth(self) -> tuple[str, str]:
         return (self._config.twilio_account_sid, self._config.twilio_auth_token)
 
-    def adaptador(self, destino: str) -> TwilioWhatsAppAdapter:
-        """Um adaptador amarrado a quem vai receber a resposta."""
-        return TwilioWhatsAppAdapter(self, destino)
+    def adaptador(
+        self, destino: str, remetente: str | None = None
+    ) -> TwilioWhatsAppAdapter:
+        """Um adaptador amarrado a quem vai receber a resposta, e por qual numero."""
+        return TwilioWhatsAppAdapter(self, destino, remetente)
 
     async def fechar(self) -> None:
         await self._http.aclose()
@@ -97,6 +103,7 @@ class TwilioWhatsApp:
             identidade=identidade,
             entrada=InboundMessage(texto=None if anexo else texto, anexo=anexo),
             message_sid=form.get("MessageSid", ""),
+            destinatario=so_numero(form.get("To", "")),
             profile_name=form.get("ProfileName") or None,
             temporario=temporario,
         )
@@ -179,18 +186,25 @@ class TwilioWhatsApp:
 
     # --- saida --------------------------------------------------------------
 
-    async def enviar_para(self, destino: str, mensagem: MensagemSaida) -> None:
+    async def enviar_para(
+        self, destino: str, mensagem: MensagemSaida, remetente: str | None = None
+    ) -> None:
         """Uma mensagem, uma chamada.
 
         O engine ja envia em sequencia, esperando cada uma — e assim que precisa
         ser: a Marina responde duas ou mais por turno, e envios em paralelo podem
         chegar fora de ordem no celular do lead.
 
+        `remetente` e o numero da empresa que esta atendendo. Sem ele, o lead
+        receberia resposta de um numero para o qual nao escreveu. Opcional com
+        retorno para a configuracao porque o terminal e o simulador nao tem empresa
+        amarrada a um numero.
+
         Falha aqui NAO derruba o turno: o estado ja foi persistido, e o que resta
         e deixar o problema visivel. O status callback confirma o resto.
         """
         dados = {
-            "From": self._config.twilio_remetente,
+            "From": como_endereco(remetente) if remetente else self._config.twilio_remetente,
             "To": como_endereco(destino),
             "Body": mensagem.conteudo,
         }
@@ -227,13 +241,17 @@ class TwilioWhatsAppAdapter:
 
     canal = CANAL
 
-    def __init__(self, twilio: TwilioWhatsApp, destino: str) -> None:
+    def __init__(
+        self, twilio: TwilioWhatsApp, destino: str, remetente: str | None = None
+    ) -> None:
         self._twilio = twilio
         self._destino = destino
+        #: O numero da empresa que esta atendendo.
+        self._remetente = remetente
 
     async def receber(self) -> InboundMessage | None:
         """Canal de push: ninguem puxa mensagem daqui."""
         return None
 
     async def enviar(self, mensagem: MensagemSaida) -> None:
-        await self._twilio.enviar_para(self._destino, mensagem)
+        await self._twilio.enviar_para(self._destino, mensagem, self._remetente)

@@ -13,6 +13,8 @@ env/
 
 # Configuracao local (contem credenciais)
 .env
+# Copias de seguranca do .env: carregam as credenciais do juridico.
+.env.bak*
 
 # Testes e cobertura
 .pytest_cache/

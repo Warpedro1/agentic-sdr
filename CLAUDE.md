@@ -16,10 +16,12 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"    # Linux/macOS: .venv/bin/python
 
 docker compose up -d          # Postgres 16 na 5432 (marina/marina/marina)
-alembic upgrade head          # head atual: 0005_conversa_whatsapp
+alembic upgrade head          # head atual: 0006_empresas
+python scripts/cadastrar_empresa.py --listar   # quem a Marina atende hoje
 python scripts/seed.py        # 3 consultores + agenda seg-sex 9h-18h
 
 python -m app.cli             # conversa com a Marina no terminal
+python -m app.cli --empresa acme   # ... por uma empresa especifica
 python -m app.whatsapp        # servidor do webhook da Twilio (:8000)
 ```
 
@@ -29,7 +31,7 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 343 testes
+pytest                                              # 363 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
@@ -97,6 +99,40 @@ visível em vez de laço infinito.
 Efeito novo se declara como dataclass frozen em `machine.py` e se executa em
 `Engine._executar_efeitos` — nunca inline na máquina.
 
+### Uma Marina, várias empresas
+
+**Cada instalação do `juridico` é uma empresa e seus funcionários**, e a Marina
+atende várias. A tabela `empresas` é o que liga as duas pontas: o número de
+WhatsApp por onde a mensagem chega e o endereço do jurídico para onde o lead vai.
+
+**A mensagem é atribuída pelo número que a RECEBEU** (o campo `To` do webhook), e
+só **depois** de a assinatura ser conferida — o `To` chega no corpo, que não é
+confiável até lá. Número não cadastrado responde 204 com aviso no log, nunca erro:
+quem chama é a Twilio, e um 4xx só a faria reentregar. A ordem em
+`app/web/webhook.py` é **assinatura → empresa → idempotência → atender fora da
+requisição**, e os três testes com `BancoProibido` são a prova de regressão dela.
+
+**A credencial de cada empresa não fica no banco.** `empresas.juridico_token_env`
+guarda o NOME de uma variável de ambiente (`JURIDICO_TOKEN_<SLUG>`); o valor vive
+só no `.env`, porque uma coluna apareceria em `pg_dump`, em réplica e em qualquer
+`SELECT`. Cadastrar empresa exige reiniciar o processo — é o preço aceito, e é
+menor do que parece, já que cadastrar já exige gerar o token no jurídico dela e
+apontar um número no Console.
+
+**Não há retorno para uma credencial global.** `JURIDICO_ATIVO` sobrou como
+desligamento de emergência de todas as empresas de uma vez; quem liga e desliga uma
+empresa é o cadastro dela. Empresa sem credencial atende normalmente com a
+integração desligada — o `--listar` de `cadastrar_empresa.py` é quem denuncia.
+
+`app/composicao.py::RegistroIntegracoes` mantém **um cliente de jurídico por
+empresa**, criado sob demanda e trocado quando o endereço ou a credencial mudam.
+`Engine` exige `empresa` sem valor padrão: "qualquer empresa" é o defeito que essa
+separação existe para eliminar.
+
+**Escopo ainda pendente.** Hoje o dado *nasce* rotulado, mas as consultas — dedup de
+lead, opt-out, consultores, drenagem da fila — ainda são globais. Duas empresas
+ainda colidiriam. Ver `docs/` e o plano das fases 3 e 4.
+
 ### Duas entradas no engine: `rodar()` e `atender()`
 
 `rodar()` é o laço de um canal que **puxa** a mensagem — o terminal. Abre a
@@ -117,7 +153,9 @@ resposta. Os dois compartilham tudo abaixo de `_processar`.
 existir lead, e o índice parcial `uq_conversa_aberta_por_identidade` garante uma
 conversa aberta por número. A concorrência é serializada por
 `pg_advisory_lock` de sessão (`Engine._trava`) — de sessão, e não de transação,
-porque um turno abre várias transações curtas.
+porque um turno abre várias transações curtas. **A chave da trava inclui a
+empresa**: a mesma pessoa falando com duas empresas tem duas conversas
+independentes, e uma não pode esperar pela outra.
 
 ### O adaptador é burro, e a entrada é tipada
 
