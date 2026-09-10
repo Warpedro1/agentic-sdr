@@ -339,7 +339,7 @@ terminal.
   `pytest_asyncio_loop_factories` em `conftest.py` pelo mesmo motivo.
 - **O README está defasado em pontos concretos.** Ele diz 301 testes (são 343) e
   descreve endpoints de um backend que não existe mais. A reunião fica **em
-  aberto** no nome do usuário de serviço e nenhuma mensagem cita um consultor.
+  aberto**, sem responsável, e nenhuma mensagem cita um consultor.
   Para regra de negócio, a fonte atual é **`docs/SDR/marina-regras-de-negocio.md`**,
   não o README.
 - **Usuário de serviço no juridico.** Gere com
@@ -347,9 +347,14 @@ terminal.
   com só duas permissões (`comercial.negociacoes` e `comercial.tarefas`) e imprime
   o token **uma única vez**. Evite dar `administrador_empresa` a ele: essa chave
   faz `temPermissao` devolver `true` para tudo.
-- **A negociação e a reunião nascem no nome do usuário de serviço**, porque o
-  juridico exige responsável em toda tarefa — é assim que "em aberto" se
-  representa. Alguém do time precisa assumir depois; não há rodízio.
+- **A reunião nasce SEM responsável no juridico** (desde 10/09/2026). Antes ela
+  ficava no nome do usuário de serviço, porque a tarefa exigia responsável; hoje o
+  campo é nulável lá, e a reunião fica disponível até alguém do comercial assumi-la
+  pela tela deles. **Nada muda deste lado**: a Marina nunca mandou `responsavel_id`,
+  e `test_reuniao_vai_como_tarefa_em_aberto` continua sendo a prova disso — agora
+  pelo motivo certo. Não há rodízio nem escolha de pessoa aqui.
+- **A negociação continua nascendo no nome do usuário de serviço.** É outro campo,
+  em outra tabela; só a tarefa mudou.
 - **Log em arquivo por padrão** (`LOG_ARQUIVO=marina.log`). Com a variável vazia o
   JSON do structlog se intercala com a conversa no terminal e deixa o atendimento
   ilegível.
