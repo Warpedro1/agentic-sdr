@@ -101,6 +101,39 @@ def test_nome_valido_avanca_para_telefone():
     assert "Pedro" in t.mensagens[0].conteudo
 
 
+def test_com_o_numero_do_canal_ela_nao_pergunta_o_telefone():
+    """No WhatsApp o numero chega na propria mensagem.
+
+    Perguntar seria pedir o dado que a conversa carrega — e pior: a resposta certa
+    seria justamente o numero que o WhatsApp entrega, que o parser de digitacao
+    recusa por vir sem o nono digito.
+    """
+    t = handle(
+        Estado.AGUARDANDO_NOME,
+        {},
+        ctx(canal="whatsapp", telefone_do_canal="+5581991234567"),
+        txt("Pedro Guerra"),
+    )
+
+    assert t.novo_estado is Estado.RESOLVENDO_IDENTIDADE
+    assert t.ctx_updates["telefone"] == "+5581991234567"
+    assert chaves(t) == []
+    (efeito,) = t.efeitos
+    assert isinstance(efeito, ResolverIdentidade)
+    assert efeito.telefone == "+5581991234567"
+    assert efeito.nome == "Pedro Guerra"
+    assert efeito.canal == "whatsapp"
+
+
+def test_sem_numero_do_canal_ela_continua_perguntando():
+    """O terminal nao tem endereco de origem: ali a pergunta segue necessaria."""
+    t = handle(Estado.AGUARDANDO_NOME, {}, ctx(), txt("Pedro Guerra"))
+
+    assert t.novo_estado is Estado.AGUARDANDO_TELEFONE
+    assert chaves(t) == ["pergunta_telefone"]
+    assert t.efeitos == []
+
+
 def test_nome_invalido_repete_a_pergunta():
     t = handle(Estado.AGUARDANDO_NOME, {}, ctx(), txt("123"))
     assert t.novo_estado is Estado.AGUARDANDO_NOME

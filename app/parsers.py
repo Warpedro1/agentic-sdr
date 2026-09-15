@@ -100,6 +100,35 @@ def parse_telefone(texto: str) -> str | None:
     return f"+55{digitos}"
 
 
+def telefone_do_canal(identidade: str) -> str | None:
+    """O numero de quem escreveu, vindo do proprio canal, em E.164.
+
+    Nao e o mesmo problema de `parse_telefone`. La o texto foi DIGITADO por uma
+    pessoa, e recusar o duvidoso e o certo: melhor perguntar de novo do que gravar
+    um numero errado. Aqui o numero veio da operadora, e ja e o endereco por onde a
+    conversa esta acontecendo — recusa-lo seria perguntar a alguem o numero de onde
+    ele acabou de falar.
+
+    O que muda de fato e o nono digito. O WhatsApp entrega o celular brasileiro de
+    DDD alto SEM ele (`+558191234567`), e a mesma regra que o parser ja usa para
+    separar fixo de celular resolve: assinante de oito digitos comecando em 2-5 e
+    fixo; de 6 a 9 e celular antigo, e o `9` que falta entra na frente.
+
+    Devolve None para o que nao for um telefone brasileiro reconhecivel — o
+    identificador de outro canal, por exemplo.
+    """
+    digitos = re.sub(r"\D", "", identidade or "")
+
+    if not digitos.startswith("55"):
+        return None
+    digitos = digitos[2:]
+
+    if len(digitos) == 10 and digitos[2:3] in "6789":
+        digitos = f"{digitos[:2]}9{digitos[2:]}"
+
+    return parse_telefone(f"+55{digitos}")
+
+
 # --- e-mail -----------------------------------------------------------------
 
 PADRAO_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")

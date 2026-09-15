@@ -140,7 +140,10 @@ async def test_responder_a_uma_empresa_nao_avanca_a_conversa_da_outra(
         c.empresa_id: c
         for c in (await sessao_db.execute(select(Conversa))).scalars().all()
     }
-    assert conversas[empresa.id].estado == Estado.AGUARDANDO_TELEFONE.value
+    # Pelo WhatsApp o telefone vem da propria mensagem, entao depois do nome a
+    # conversa ja esta na qualificacao. O que importa aqui e a outra empresa nao
+    # ter andado junto.
+    assert conversas[empresa.id].estado == Estado.AGUARDANDO_FONTE.value
     assert conversas[outra_empresa.id].estado == Estado.AGUARDANDO_NOME.value
 
 

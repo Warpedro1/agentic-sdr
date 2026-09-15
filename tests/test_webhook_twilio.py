@@ -188,7 +188,9 @@ async def test_segunda_mensagem_avanca_a_mesma_conversa(sessao_db, criar_sessao_
 
     conversas = (await sessao_db.execute(select(Conversa))).scalars().all()
     assert len(conversas) == 1
-    assert conversas[0].estado == "AGUARDANDO_TELEFONE"
+    # Depois do nome ela NAO pergunta o telefone: no WhatsApp o numero chega na
+    # propria mensagem, e perguntar seria pedir o que a conversa ja tem.
+    assert conversas[0].estado == "AGUARDANDO_FONTE"
 
     # A transcrição guarda as duas entradas e todas as saídas, em sequência sem
     # buraco — o contador foi reidratado, não recomeçou do zero.

@@ -55,6 +55,7 @@ from app.machine import (
     handle,
 )
 from app.models import Conversa, Documento, Lead, Mensagem, OptOut
+from app.parsers import telefone_do_canal
 from app.agenda.carga import carga_futura
 from app.storage.local import ArmazenamentoDocumento
 from app.templates import CatalogoMensagens, obter_catalogo
@@ -65,7 +66,16 @@ logger = obter_logger("engine")
 #: carregam objetos ricos (datetime, dataclass) e porque sao resultado de I/O
 #: recem-feito — persistir daria a impressao de que continuam validas depois.
 CHAVES_TRANSITORIAS = frozenset(
-    {"agora", "politicas", "reconhecimento", "reserva", "canal"}
+    {
+        "agora",
+        "politicas",
+        "reconhecimento",
+        "reserva",
+        "canal",
+        # Vem da identidade da conversa, que ja esta no banco: gravar de novo seria
+        # um segundo lugar onde a mesma verdade pode divergir.
+        "telefone_do_canal",
+    }
 )
 
 #: Numero maximo de reentradas seguidas. Um fluxo saudavel usa 1 ou 2; o limite
@@ -86,6 +96,10 @@ class Execucao:
     lead_id: uuid.UUID | None = None
     lead: dict = field(default_factory=dict)
     ctx: dict = field(default_factory=dict)
+    #: Quem escreveu, do jeito que o canal informa. Vazio no terminal, que nao tem
+    #: endereco de origem. E o que permite a maquina nao perguntar um telefone que
+    #: a conversa ja conhece.
+    identidade: str | None = None
     #: Contador da transcricao. Ver o comentario em models.Mensagem.sequencia.
     proxima_sequencia: int = 0
 
@@ -214,6 +228,7 @@ class Engine:
         # duas conversas independentes, e uma nao pode esperar pela outra.
         async with self._trava(f"{self._empresa.id}:{identidade}"):
             execucao, nova = await self._localizar_ou_abrir(identidade)
+            execucao.identidade = identidade
             await self._registrar_entrada(execucao, entrada)
             # Conversa recem-nascida: a mensagem que a abriu dispara a saudacao e
             # NAO e consumida como resposta. Senao o "oi" viraria tentativa de
@@ -377,6 +392,15 @@ class Engine:
             execucao.ctx["agora"] = self._agora()
             execucao.ctx["politicas"] = self._politicas()
             execucao.ctx.setdefault("canal", self._adaptador.canal)
+            # O numero de quem escreveu, ja em E.164 e com o nono digito reposto.
+            # Sem isto a Marina perguntaria no WhatsApp um telefone que a propria
+            # mensagem carrega — e recusaria a resposta certa, porque a operadora
+            # entrega o celular de DDD alto sem o 9.
+            telefone_canal = (
+                telefone_do_canal(execucao.identidade) if execucao.identidade else None
+            )
+            if telefone_canal:
+                execucao.ctx["telefone_do_canal"] = telefone_canal
 
             transicao = handle(
                 execucao.estado, execucao.lead, execucao.ctx, entrada, self._catalogo

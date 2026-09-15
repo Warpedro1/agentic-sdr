@@ -16,6 +16,7 @@ maquina so pergunta `entrada.anexo is not None`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
@@ -56,6 +57,32 @@ class MensagemSaida:
 
     template_key: str
     conteudo: str
+
+
+@dataclass(frozen=True)
+class EntradaWhatsApp:
+    """Uma mensagem de WhatsApp recebida, ja traduzida pelo adaptador.
+
+    Mora aqui, e nao no modulo de um provedor, porque atravessa a mesma fronteira
+    que os tipos acima: e o que a camada web recebe de QUALQUER adaptador de
+    WhatsApp. Twilio e Meta entregam formatos completamente diferentes e produzem
+    esta mesma coisa — que e o ponto.
+    """
+
+    #: Telefone E.164 sem prefixo. E a identidade da conversa.
+    identidade: str
+    entrada: InboundMessage
+    #: A chave de idempotencia: qualquer provedor pode entregar duas vezes.
+    message_sid: str
+    #: O numero QUE RECEBEU a mensagem. Cada empresa tem o seu, entao e por aqui
+    #: que se descobre por qual empresa este atendimento acontece. So e confiavel
+    #: depois de a autenticidade da chamada ser conferida — ele vem no corpo.
+    destinatario: str = ""
+    #: Nome do perfil no WhatsApp. Vai para o log e NAO substitui a pergunta do
+    #: nome — a Marina pergunta, e o cadastro e o que ela apurou.
+    profile_name: str | None = None
+    #: Arquivo temporario baixado, para o chamador apagar depois do turno.
+    temporario: Path | None = None
 
 
 @runtime_checkable

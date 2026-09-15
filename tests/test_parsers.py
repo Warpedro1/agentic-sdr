@@ -10,6 +10,7 @@ from app.parsers import (
     parse_opcao_menu,
     parse_sim_nao,
     parse_telefone,
+    telefone_do_canal,
     parse_tipo_contrato,
     primeiro_nome,
     quer_pular,
@@ -78,6 +79,42 @@ def test_telefone_normalizado(entrada, esperado):
 )
 def test_telefone_recusado(entrada):
     assert parse_telefone(entrada) is None
+
+
+# --- telefone que vem do canal ----------------------------------------------
+#
+# Nao e o mesmo problema do parser de digitacao. Aqui o numero veio da operadora
+# e ja e o endereco por onde a conversa acontece: recusa-lo seria perguntar a
+# alguem o numero de onde ele acabou de falar.
+
+
+@pytest.mark.parametrize(
+    "identidade,esperado",
+    [
+        # O caso que motivou tudo: o WhatsApp entrega celular de DDD alto SEM o
+        # nono digito, e era assim que o numero do proprio time era recusado.
+        ("+558191234567", "+5581991234567"),
+        ("whatsapp:+558191234567", "+5581991234567"),
+        ("+5581991234567", "+5581991234567"),  # ja completo, passa direto
+        ("+5511987654321", "+5511987654321"),
+        ("+551133334444", "+551133334444"),  # fixo continua fixo, sem ganhar o 9
+    ],
+)
+def test_telefone_do_canal_repoe_o_nono_digito(identidade, esperado):
+    assert telefone_do_canal(identidade) == esperado
+
+
+@pytest.mark.parametrize(
+    "identidade",
+    [
+        "+14155238886",  # outro pais
+        "terminal",  # canal sem endereco
+        "+55819999999",  # digitos de menos
+        "",
+    ],
+)
+def test_telefone_do_canal_recusa_o_que_nao_reconhece(identidade):
+    assert telefone_do_canal(identidade) is None
 
 
 # --- e-mail -----------------------------------------------------------------

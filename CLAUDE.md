@@ -16,13 +16,13 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"    # Linux/macOS: .venv/bin/python
 
 docker compose up -d          # Postgres 16 na 5432 (marina/marina/marina)
-alembic upgrade head          # head atual: 0007_escopo_por_empresa
+alembic upgrade head          # head atual: 0009_id_externo_da_meta
 python scripts/cadastrar_empresa.py --listar   # quem a Marina atende hoje
 python scripts/seed.py        # 3 consultores + agenda seg-sex 9h-18h
 
 python -m app.cli             # conversa com a Marina no terminal
 python -m app.cli --empresa acme   # ... por uma empresa especifica
-python -m app.whatsapp        # servidor do webhook da Twilio (:8000)
+python -m app.whatsapp        # webhooks do WhatsApp, Twilio e Meta (:8000)
 ```
 
 Não há `.env` versionado — copie o `.env.example`. `alembic/env.py` lê a URL do
@@ -31,7 +31,7 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 374 testes
+pytest                                              # 413 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
@@ -64,6 +64,22 @@ python scripts/configurar_agenda.py --listar              # define quem atende q
 python scripts/flush_outbox.py [--falhados|--reprocessar] # força a entrega ao juridico
 python scripts/simular_webhook_twilio.py --texto "oi"     # webhook assinado, sem ngrok
 ```
+
+## Requisitos
+
+`docs/SDR/marina-requisitos.md` é a especificação de requisitos (ISO/IEC/IEEE 29148),
+levantada do código e rastreada até os testes. Três regras ao mexer nela:
+
+- **Mudança de comportamento atualiza, na mesma entrega, o requisito e o teste que o
+  rastreia.** Cada requisito cita o caso que o comprova (`arquivo::caso`); renomear
+  ou apagar um teste quebra a rastreabilidade em silêncio — procure o nome do caso
+  no documento antes.
+- **IDs são estáveis** (`RF-CONV-05`, `RNF-SEG-03`…). Requisito que deixa de valer é
+  marcado como retirado, nunca renumerado nem reaproveitado.
+- **O que não está implementado vai para o Apêndice B** (`PROP-NN`), e valor que
+  ninguém decidiu fica **[A DEFINIR]** com responsável. Não se inventa meta de
+  desempenho, disponibilidade ou retenção: essas estão pendentes de decisão do
+  negócio.
 
 ## Arquitetura
 
@@ -224,6 +240,17 @@ proibido (`taxa`, `juros`, `honorári`…, comparados por **trecho**, para pegar
 Não existe parsing de data em linguagem natural: horário é escolhido pelo número
 do menu, e ponto.
 
+**No WhatsApp ela não pergunta o telefone.** O número de quem escreveu chega na
+própria mensagem, e o engine o coloca em `ctx["telefone_do_canal"]` já em E.164;
+com ele presente, `AGUARDANDO_NOME` vai direto para `RESOLVENDO_IDENTIDADE`. No
+terminal não há origem, e a pergunta continua — os dois caminhos têm teste.
+
+São **dois parsers, de propósito**: `parse_telefone` trata o que a pessoa DIGITA e
+recusa o duvidoso, porque perguntar de novo é melhor que gravar errado;
+`telefone_do_canal` trata o que a operadora informa e **repõe o nono dígito**, que
+o WhatsApp omite no celular de DDD alto (`+558191234567` → `+5581991234567`). Sem
+essa reposição, o número de quem testa era recusado pelo próprio sistema.
+
 ### Persistência
 
 `app/models.py` — tudo em UTC (`DateTime(timezone=True)`), conversão para
@@ -337,11 +364,12 @@ terminal.
   `InterfaceError` antes de qualquer query. Todo entrypoint assíncrono (cli,
   scripts, alembic) usa `executar`; os testes usam o hook
   `pytest_asyncio_loop_factories` em `conftest.py` pelo mesmo motivo.
-- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 343) e
+- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 413) e
   descreve endpoints de um backend que não existe mais. A reunião fica **em
   aberto**, sem responsável, e nenhuma mensagem cita um consultor.
-  Para regra de negócio, a fonte atual é **`docs/SDR/marina-regras-de-negocio.md`**,
-  não o README.
+  Para regra de negócio, a fonte atual é a especificação
+  **`docs/SDR/marina-requisitos.md`** (ver "Requisitos"), não o README nem as
+  seções superadas de `marina-regras-de-negocio.md`.
 - **Usuário de serviço no juridico.** Gere com
   `php artisan integracao:usuario "Nome da Empresa"` lá; o comando cria um perfil
   com só duas permissões (`comercial.negociacoes` e `comercial.tarefas`) e imprime

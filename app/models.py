@@ -83,6 +83,14 @@ class Empresa(Base):
     #: empresas convivem sem numero (a que so roda no terminal, a que foi cadastrada
     #: antes de o remetente ser liberado) e o roteamento nunca casa com nulo.
     whatsapp_numero: Mapped[str | None] = mapped_column(String(20))
+    #: O identificador do numero na Meta (`phone_number_id`). Existe porque a Cloud
+    #: API enderaca o ENVIO por ele, nao pelo numero: a URL de envio e
+    #: `/{versao}/{phone_number_id}/messages`. Como ele tambem vem em toda mensagem
+    #: recebida (`metadata.phone_number_id`), e ele — e nao o numero — que roteia a
+    #: mensagem para a empresa dona dela. Vale o mesmo criterio do numero: nulo e
+    #: unico ao mesmo tempo, para conviver com empresa que so atende pela Twilio ou
+    #: so pelo terminal.
+    whatsapp_numero_id: Mapped[str | None] = mapped_column(String(40))
 
     juridico_ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     juridico_base_url: Mapped[str] = mapped_column(
@@ -107,6 +115,7 @@ class Empresa(Base):
     __table_args__ = (
         UniqueConstraint("slug", name="uq_empresas_slug"),
         Index("uq_empresas_whatsapp_numero", "whatsapp_numero", unique=True),
+        Index("uq_empresas_whatsapp_numero_id", "whatsapp_numero_id", unique=True),
     )
 
 
@@ -277,8 +286,9 @@ class MensagemRecebida(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     canal: Mapped[str] = mapped_column(String(20), nullable=False)
-    #: Identificador do fornecedor. No Twilio e o `MessageSid`.
-    id_externo: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Identificador do fornecedor. No Twilio e o `MessageSid` (34); na Meta, o
+    #: `wamid`, que ja chegou com 78 e nao tem maximo documentado.
+    id_externo: Mapped[str] = mapped_column(String(255), nullable=False)
     recebida_em: Mapped[datetime] = _agora()
 
     __table_args__ = (

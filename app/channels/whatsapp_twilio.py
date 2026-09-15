@@ -26,11 +26,33 @@ from pathlib import Path
 
 import httpx
 
-from app.channels.base import Anexo, InboundMessage, MensagemSaida
+from app.channels.base import Anexo, EntradaWhatsApp, InboundMessage, MensagemSaida
 from app.config import Configuracao, obter_configuracao
 from app.logging import obter_logger
 
 logger = obter_logger("whatsapp")
+
+def _detalhe_twilio(erro: Exception) -> dict[str, object]:
+    """O que a Twilio respondeu, quando ela respondeu alguma coisa.
+
+    Devolve dicionario vazio para falha sem resposta (conexao recusada, tempo
+    esgotado) e para corpo que nao seja o JSON de erro esperado — aqui nada pode
+    estourar, porque este codigo roda dentro do tratamento de OUTRO erro.
+    """
+    resposta = getattr(erro, "response", None)
+    if resposta is None:
+        return {}
+    detalhe: dict[str, object] = {"http": resposta.status_code}
+    try:
+        corpo = resposta.json()
+    except Exception:  # noqa: BLE001 - corpo nao-JSON e so ausencia de detalhe
+        return detalhe
+    if isinstance(corpo, dict):
+        for origem, destino in (("code", "codigo"), ("message", "twilio_mensagem")):
+            if corpo.get(origem) is not None:
+                detalhe[destino] = corpo[origem]
+    return detalhe
+
 
 CANAL = "whatsapp"
 
@@ -48,26 +70,6 @@ def como_endereco(numero: str) -> str:
     """`+5511999999999` -> `whatsapp:+5511999999999`."""
     limpo = (numero or "").strip()
     return limpo if limpo.startswith(_PREFIXO) else f"{_PREFIXO}{limpo}"
-
-
-@dataclass(frozen=True)
-class EntradaWhatsApp:
-    """Uma mensagem recebida, ja traduzida."""
-
-    #: Telefone E.164 sem o prefixo. E a identidade da conversa.
-    identidade: str
-    entrada: InboundMessage
-    #: `MessageSid`. A chave de idempotencia: a Twilio pode entregar duas vezes.
-    message_sid: str
-    #: O numero QUE RECEBEU a mensagem, E.164 sem prefixo. Cada empresa tem o seu,
-    #: entao e por aqui que se descobre por qual empresa este atendimento acontece.
-    #: So e confiavel depois de a assinatura ser conferida — ele vem no corpo.
-    destinatario: str = ""
-    #: Nome do perfil no WhatsApp. Vai para o log e NAO substitui a pergunta do
-    #: nome — a Marina pergunta, e o cadastro e o que ela apurou.
-    profile_name: str | None = None
-    #: Arquivo temporario baixado, para o chamador apagar depois do turno.
-    temporario: Path | None = None
 
 
 class TwilioWhatsApp:
@@ -218,11 +220,16 @@ class TwilioWhatsApp:
             resposta = await self._http.post(url, data=dados, auth=self._auth)
             resposta.raise_for_status()
         except httpx.HTTPError as erro:
+            # O texto do httpx diz so "400 Bad Request". Quem explica o que houve e
+            # o corpo da Twilio, e e ali que vem o codigo — 63016 fora da janela de
+            # 24h, 21654 template exigido, 21610 numero que pediu para sair. Sem
+            # isto, toda falha de envio vira uma investigacao do zero.
             logger.error(
                 "envio_falhou",
                 template_key=mensagem.template_key,
                 destino=destino,
                 erro=str(erro),
+                **_detalhe_twilio(erro),
             )
             return
         logger.info(

@@ -539,6 +539,26 @@ def _por_estado(
         if nome is None:
             return _falha_de_parsing(catalogo, estado, lead, ctx)
         contexto = {**ctx, "nome": nome}
+        # Quando o canal ja informa de onde a pessoa esta falando — o WhatsApp
+        # informa —, perguntar o telefone e pedir um dado que a conversa carrega.
+        # Pior: o numero que ela responderia e justamente o que o WhatsApp entrega,
+        # e no terminal esse formato seria recusado. Sobrando a pergunta, sobra o
+        # erro. No terminal nao ha origem, e a pergunta continua.
+        telefone = ctx.get("telefone_do_canal")
+        if telefone:
+            return Transicao(
+                novo_estado=Estado.RESOLVENDO_IDENTIDADE,
+                ctx_updates={"nome": nome, "telefone": telefone, "tentativas": 0},
+                efeitos=[
+                    ResolverIdentidade(
+                        telefone=telefone,
+                        nome=nome,
+                        email=ctx.get("email"),
+                        consentimento_em=ctx.get("consentimento_em"),
+                        canal=ctx.get("canal", "terminal"),
+                    )
+                ],
+            )
         return Transicao(
             novo_estado=Estado.AGUARDANDO_TELEFONE,
             ctx_updates={"nome": nome, "tentativas": 0},

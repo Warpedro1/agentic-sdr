@@ -40,6 +40,11 @@ class EmpresaCtx:
     #: escrever `logger.info("...", empresa=empresa)`.
     juridico_token: str = field(default="", repr=False)
     crm_empresa_id: str | None = None
+    #: Identificador do numero na Meta. E por ele que o envio pela Cloud API e
+    #: enderecado, e e por ele que a mensagem recebida encontra sua empresa. Fica
+    #: no fim, com padrao, para quem ja constroi uma empresa sem ele continuar
+    #: funcionando — a Twilio e o terminal nao precisam deste campo.
+    whatsapp_numero_id: str | None = None
 
     @property
     def curto(self) -> str:
@@ -59,6 +64,7 @@ def _congelar(linha: Empresa) -> EmpresaCtx:
         nome=linha.nome,
         nome_curto=linha.nome_curto or "",
         whatsapp_numero=linha.whatsapp_numero,
+        whatsapp_numero_id=linha.whatsapp_numero_id,
         juridico_ativo=linha.juridico_ativo,
         juridico_base_url=linha.juridico_base_url,
         juridico_token=ler_segredo(linha.juridico_token_env),
@@ -83,6 +89,26 @@ async def por_numero(sessao: AsyncSession, numero: str) -> EmpresaCtx | None:
     linha = await sessao.scalar(
         select(Empresa).where(
             Empresa.whatsapp_numero == limpo, Empresa.ativo.is_(True)
+        )
+    )
+    return _congelar(linha) if linha else None
+
+
+async def por_numero_id(sessao: AsyncSession, numero_id: str) -> EmpresaCtx | None:
+    """A empresa dona do numero que recebeu, quando quem entrega e a Meta.
+
+    O papel e o mesmo de `por_numero`, e o criterio de desvio tambem: nao achou,
+    ninguem e atendido e nada e gravado. Muda so a chave — a Cloud API identifica o
+    numero por um id proprio, que e o que vem em `metadata.phone_number_id` e o que
+    a URL de envio exige. Casar pelo numero exibido seria pior: ele chega sem o `+`
+    e sem garantia de formato.
+    """
+    limpo = (numero_id or "").strip()
+    if not limpo:
+        return None
+    linha = await sessao.scalar(
+        select(Empresa).where(
+            Empresa.whatsapp_numero_id == limpo, Empresa.ativo.is_(True)
         )
     )
     return _congelar(linha) if linha else None

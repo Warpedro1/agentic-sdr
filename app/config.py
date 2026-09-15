@@ -48,6 +48,26 @@ class Configuracao(BaseSettings):
     whatsapp_host: str = "127.0.0.1"
     whatsapp_porta: int = 8000
 
+    # WhatsApp direto na Meta (Cloud API), sem intermediario
+    #
+    # Convivem com a Twilio de proposito: cada caminho de entrada responde pelo seu
+    # proprio provedor, entao nao ha chave para escolher um. Quem chamar, atende.
+    #: Token do usuario de SISTEMA, nao o temporario da tela de configuracao — o
+    #: temporario expira em menos de 24h e a Marina pararia de responder sozinha.
+    meta_access_token: str = ""
+    #: A chave secreta do app. E com ela que a Meta assina cada chamada
+    #: (`X-Hub-Signature-256`, HMAC-SHA256 sobre o CORPO CRU). Sem ela nao ha como
+    #: distinguir a Meta de qualquer um que descubra o endereco.
+    meta_app_secret: str = ""
+    #: Valor combinado com a Meta no aperto de mao inicial do webhook. So serve
+    #: para ela provar que o endereco e nosso; nao protege as mensagens.
+    meta_verify_token: str = ""
+    #: A versao entra na URL de envio. Fixada de proposito: a Meta muda contrato
+    #: entre versoes, e descobrir isso em producao seria caro.
+    meta_api_versao: str = "v25.0"
+    #: So o teste desliga.
+    meta_validar_assinatura: bool = True
+
     # CRM externo (hoje o `juridico`)
     #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
     #: da integracao existir. Ligar e mudar uma linha.
