@@ -3,7 +3,7 @@
 > **Norma:** ISO/IEC/IEEE 29148:2018, estrutura de SRS (cláusula 9.6).
 > **Versão:** 1.1 · 15/09/2026 · **Situação:** linha de base + canal Z-API.
 >
-> **Fonte da verdade:** o código em `main` e a suíte `pytest` (453 testes). Os
+> **Fonte da verdade:** o código em `main` e a suíte `pytest` (454 testes). Os
 > requisitos foram levantados do comportamento implementado e rastreados até o teste
 > que o comprova. Onde este documento e `marina-regras-de-negocio.md` divergem, vale
 > este — as divergências estão no [Apêndice C](#apêndice-c--divergências-com-documentos-anteriores).
@@ -273,7 +273,7 @@ instalação do `base-crm-juridico` por empresa atendida.
 |---|---|---|---|
 | RF-WA-01 | A primeira mensagem de uma identidade deve abrir a conversa e disparar a saudação, sem ser consumida como resposta. | — | T: `engine_atender::test_primeira_mensagem_abre_a_conversa_e_so_saúda` |
 | RF-WA-02 | Mensagem com id externo já processado não deve gerar novo passo da conversa. | Provedores reentregam. | T: `webhook_twilio::test_message_sid_repetido_nao_vira_dois_passos` · `webhook_meta::test_mensagem_repetida_nao_vira_dois_passos` · `webhook_zapi::test_mensagem_repetida_nao_vira_dois_passos` |
-| RF-WA-03 | Deve existir no máximo uma conversa aberta por identidade por empresa, e mensagens simultâneas da mesma identidade devem ser processadas em série. | — | T: `engine_atender::test_duas_mensagens_juntas_nao_duplicam_a_conversa` |
+| RF-WA-03 | Deve existir no máximo uma conversa aberta por identidade por empresa, e mensagens simultâneas da mesma identidade devem ser processadas em série. | — | T: `engine_atender::test_duas_mensagens_juntas_nao_duplicam_a_conversa` · `engine_atender::test_a_trava_e_solta_mesmo_com_o_pool_cheio` |
 | RF-WA-04 | A resposta deve sair pelo número da empresa que recebeu a mensagem e pelo mesmo provedor por onde ela chegou. | Senão o lead recebe mensagem de número para o qual não escreveu. | T: `webhook_twilio::test_a_resposta_sai_pelo_numero_da_empresa` · `webhook_meta::test_primeira_mensagem_abre_a_conversa_e_responde_pelo_numero_da_empresa` · `webhook_zapi::test_primeira_mensagem_abre_a_conversa_e_responde_pela_instancia` |
 | RF-WA-05 | Pela Meta, a resposta a celular brasileiro deve ser endereçada ao número com o nono dígito; números de outros países devem ser respondidos como chegaram. | A lista de destinatários do número de teste compara o texto literal. | T: `webhook_meta::test_numero_de_fora_do_brasil_recebe_resposta_como_chegou` |
 | RF-WA-06 | Avisos de entrega devem ser registrados; falhas devem registrar código e motivo do provedor; aviso de entrega não deve abrir conversa. | É o único lugar onde o motivo de uma mensagem não entregue existe. | T: `webhook_twilio::test_status_de_falha_e_registrado` · `webhook_meta::test_aviso_de_entrega_nao_abre_conversa` · `whatsapp_meta::test_o_motivo_da_meta_chega_ao_log` |
@@ -423,7 +423,7 @@ aguardam valor ([Apêndice B.2](#b2-valores-a-definir)).
 
 | Método | Como é executado |
 |---|---|
-| **T — Teste** | `pytest` (453 casos). Cada requisito T cita ao menos um caso. A cerca de pureza (`machine_pura`) e o snapshot da transcrição (`e2e_transcricao`) são testes de restrição. |
+| **T — Teste** | `pytest` (454 casos). Cada requisito T cita ao menos um caso. A cerca de pureza (`machine_pura`) e o snapshot da transcrição (`e2e_transcricao`) são testes de restrição. |
 | **I — Inspeção** | Revisão do código ou da configuração citada, em revisão de mudança. |
 | **D — Demonstração** | Execução do script citado contra um ambiente de desenvolvimento. |
 | **A — Análise** | Medição ou revisão documental. Aplica-se aos itens [A DEFINIR] depois de receberem valor. |
@@ -496,3 +496,4 @@ aceito.
 |---|---|---|
 | 1.0 | 15/09/2026 | Linha de base levantada do código e dos testes (413 casos, migração `0009_id_externo_da_meta`). |
 | 1.1 | 15/09/2026 | Canal Z-API (RI-09, RI-10, RF-WA-11 a 13, RNF-SEG-09 e 10), mascaramento de segredos no log, migração `0010_empresa_instancia_zapi`, 453 casos. |
+| 1.1.1 | 16/09/2026 | RF-WA-03: a trava por identidade vazava quando o pool tinha várias conexões e a Marina parava de responder àquele número; caso de teste novo rastreado, 454 casos. |

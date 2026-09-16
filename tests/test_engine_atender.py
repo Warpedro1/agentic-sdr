@@ -12,7 +12,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.channels.base import InboundMessage, MensagemSaida
 from app.config import Configuracao
@@ -214,6 +214,38 @@ async def test_duas_mensagens_juntas_nao_duplicam_a_conversa(sessao_db, criar_se
         .all()
     )
     assert len(sequencias) == len(set(sequencias)) == 2
+
+
+async def test_a_trava_e_solta_mesmo_com_o_pool_cheio(sessao_db, criar_sessao_db, empresa):
+    """A trava de sessao precisa sair pela MESMA conexao que a pegou.
+
+    Com a conexao devolvida ao pool no meio do turno, o unlock saia por outra, nao
+    soltava nada, e a trava ficava esquecida numa conexao ociosa: a mensagem
+    seguinte daquele numero esperava para sempre. Em 16/09/2026 a Marina parou de
+    responder assim, depois de dois leads conversando ao mesmo tempo aquecerem o
+    pool.
+    """
+    # Varias conexoes ociosas no pool, como depois de atendimentos simultaneos.
+    sessoes = [criar_sessao_db() for _ in range(4)]
+    for sessao in sessoes:
+        await sessao.execute(select(1))
+    for sessao in sessoes:
+        await sessao.close()
+
+    motor, _ = montar(criar_sessao_db, empresa)
+    await motor.atender(TELEFONE, txt("oi"))
+
+    presas = await sessao_db.scalar(
+        text(
+            "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+            "WHERE l.locktype = 'advisory' AND l.granted AND d.datname = current_database()"
+        )
+    )
+    assert presas == 0
+
+    # E a prova pelo sintoma: a mensagem seguinte do mesmo numero e atendida.
+    seguinte, _ = montar(criar_sessao_db, empresa)
+    await asyncio.wait_for(seguinte.atender(TELEFONE, txt("Pedro Guerra")), timeout=10)
 
 
 @pytest.mark.asyncio

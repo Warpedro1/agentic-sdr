@@ -31,7 +31,7 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 453 testes
+pytest                                              # 454 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
@@ -208,7 +208,10 @@ resposta. Os dois compartilham tudo abaixo de `_processar`.
 existir lead, e o índice parcial `uq_conversa_aberta_por_identidade` garante uma
 conversa aberta por número. A concorrência é serializada por
 `pg_advisory_lock` de sessão (`Engine._trava`) — de sessão, e não de transação,
-porque um turno abre várias transações curtas. **A chave da trava inclui a
+porque um turno abre várias transações curtas. Por isso a trava usa uma
+**conexão** reservada, e não uma sessão: a sessão devolve a conexão ao pool a cada
+commit, e o unlock saía por outra conexão sem soltar nada — a trava ficava esquecida
+e o próximo turno daquele número esperava para sempre. **A chave da trava inclui a
 empresa**: a mesma pessoa falando com duas empresas tem duas conversas
 independentes, e uma não pode esperar pela outra.
 
@@ -393,7 +396,7 @@ terminal.
   `InterfaceError` antes de qualquer query. Todo entrypoint assíncrono (cli,
   scripts, alembic) usa `executar`; os testes usam o hook
   `pytest_asyncio_loop_factories` em `conftest.py` pelo mesmo motivo.
-- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 453) e
+- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 454) e
   descreve endpoints de um backend que não existe mais. A reunião fica **em
   aberto**, sem responsável, e nenhuma mensagem cita um consultor.
   Para regra de negócio, a fonte atual é a especificação

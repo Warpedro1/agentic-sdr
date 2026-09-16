@@ -253,21 +253,32 @@ class Engine:
         transacoes curtas (`_aplicar` e cada efeito).
         """
         argumento = {"chave": chave}
-        async with self._criar_sessao() as sessao:
-            await sessao.execute(
+        # Uma CONEXAO, e nao uma sessao. A trava pertence a conexao, e a sessao
+        # devolve a conexao ao pool a cada commit: o unlock saia por outra conexao,
+        # nao soltava nada, e a trava ficava esquecida numa conexao ociosa — a
+        # mensagem seguinte daquele numero esperava para sempre.
+        async with self._criar_sessao.kw["bind"].connect() as conexao:
+            await conexao.execute(
                 text("SELECT pg_advisory_lock(hashtextextended(:chave, 0))"), argumento
             )
-            # Fecha a transacao mantendo a trava, para a conexao nao passar o turno
-            # inteiro idle-in-transaction.
-            await sessao.commit()
+            # Fecha a transacao mantendo a trava e a conexao, para ela nao passar o
+            # turno inteiro idle-in-transaction.
+            await conexao.commit()
             try:
                 yield
             finally:
-                await sessao.execute(
-                    text("SELECT pg_advisory_unlock(hashtextextended(:chave, 0))"),
-                    argumento,
-                )
-                await sessao.commit()
+                try:
+                    await conexao.execute(
+                        text("SELECT pg_advisory_unlock(hashtextextended(:chave, 0))"),
+                        argumento,
+                    )
+                    await conexao.commit()
+                except BaseException:
+                    # Sem conseguir soltar (turno cancelado, conexao quebrada), a
+                    # conexao nao pode voltar ao pool carregando a trava: descartada,
+                    # o Postgres solta a trava junto.
+                    await conexao.invalidate()
+                    raise
 
     async def _localizar_ou_abrir(self, identidade: str) -> tuple[Execucao, bool]:
         """A conversa aberta desta identidade, ou uma nova. Diz qual dos dois."""
