@@ -5,11 +5,50 @@ auditadas depois sem parsing de texto livre.
 """
 
 import logging
+import re
 import sys
 
 import structlog
 
 from app.config import obter_configuracao
+
+#: Pedacos de URL que carregam segredo. Duas bibliotecas escrevem URL inteira no log
+#: sem ninguem pedir: o httpx registra toda chamada que a Marina FAZ — e na Z-API o
+#: token da instancia vai no caminho (`/token/<token>/send-text`) —, e o uvicorn
+#: registra toda chamada RECEBIDA — o webhook da Z-API tem o segredo no caminho, e o
+#: aperto de mao da Meta traz o token de verificacao na query.
+_SEGREDOS_EM_URL: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(/token/)[^/?\s\"']+"), r"\1***"),
+    (re.compile(r"(/webhooks/zapi/)[^/?\s\"']+"), r"\1***"),
+    (re.compile(r"(hub[._]verify_token=)[^&\s\"']+"), r"\1***"),
+)
+
+
+def mascarar_segredos(texto: str) -> str:
+    for padrao, troca in _SEGREDOS_EM_URL:
+        texto = padrao.sub(troca, texto)
+    return texto
+
+
+class MascaraSegredos(logging.Filter):
+    """Reescreve a linha ja formatada antes de ela chegar ao destino.
+
+    Fica no HANDLER, e nao num logger especifico: assim vale para o que vier de
+    qualquer biblioteca, inclusive das que ainda nao sabemos que escrevem URL.
+    Formatar aqui (`getMessage`) e necessario porque o httpx passa a URL como objeto
+    nos argumentos, e nao como texto.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            mensagem = record.getMessage()
+        except Exception:  # noqa: BLE001 - registro malformado segue como veio
+            return True
+        mascarada = mascarar_segredos(mensagem)
+        if mascarada != mensagem:
+            record.msg = mascarada
+            record.args = None
+        return True
 
 
 def configurar_logging(destino: str | None = None) -> None:
@@ -34,6 +73,9 @@ def configurar_logging(destino: str | None = None) -> None:
         logging.basicConfig(
             format="%(message)s", stream=sys.stderr, level=nivel, force=True
         )
+    # `force=True` recria os handlers a cada chamada, entao o filtro nao se acumula.
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(MascaraSegredos())
 
     structlog.configure(
         processors=[

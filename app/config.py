@@ -68,6 +68,19 @@ class Configuracao(BaseSettings):
     #: So o teste desliga.
     meta_validar_assinatura: bool = True
 
+    # WhatsApp pela Z-API
+    #
+    # Terceiro caminho, convivendo com os outros dois. A instancia (o numero) e de
+    # cada empresa, e o token dela tambem: fica em `ZAPI_TOKEN_<SLUG>`, nao aqui.
+    #: Token de seguranca da CONTA (cabecalho `Client-Token`). Com ele ativo na Z-API,
+    #: toda chamada sem o cabecalho e recusada — inclusive o envio.
+    zapi_client_token: str = ""
+    #: Segredo que vai no endereco do webhook (`/webhooks/zapi/<segredo>`). A Z-API
+    #: nao assina as chamadas nem manda cabecalho de autenticacao, entao e ele que
+    #: separa a Z-API de qualquer um que descubra o endereco. Vazio = tudo recusado.
+    zapi_webhook_segredo: str = ""
+    zapi_url_base: str = "https://api.z-api.io"
+
     # CRM externo (hoje o `juridico`)
     #: Desligado por padrao: sem isto a Marina se comporta exatamente como antes
     #: da integracao existir. Ligar e mudar uma linha.

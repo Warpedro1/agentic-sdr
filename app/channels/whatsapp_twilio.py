@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 
 from app.channels.base import Anexo, EntradaWhatsApp, InboundMessage, MensagemSaida
+from app.channels.midia import MidiaGrandeDemais, baixar_com_limite
 from app.config import Configuracao, obter_configuracao
 from app.logging import obter_logger
 
@@ -144,8 +145,11 @@ class TwilioWhatsApp:
 
         destino = Path(tempfile.gettempdir()) / f"marina-{uuid.uuid4().hex}{extensao}"
         try:
-            tamanho = await self._baixar(url, destino)
-        except _MidiaGrandeDemais:
+            # A autenticacao do download e a da propria conta.
+            tamanho = await baixar_com_limite(
+                self._http, url, destino, self._config.doc_max_bytes, auth=self._auth
+            )
+        except MidiaGrandeDemais:
             logger.warning(
                 "midia_recusada", motivo="acima do limite", limite=self._config.doc_max_bytes
             )
@@ -163,28 +167,6 @@ class TwilioWhatsApp:
             origem=str(destino),
         )
         return anexo, destino
-
-    async def _baixar(self, url: str, destino: Path) -> int:
-        """Grava a midia em `destino` e devolve o tamanho.
-
-        `follow_redirects` porque a URL da Twilio redireciona para o
-        armazenamento; a autenticacao e a da propria conta. O tamanho e conferido
-        durante o download, para um arquivo enorme nao encher o disco antes de
-        alguem reparar.
-        """
-        limite = self._config.doc_max_bytes
-        escritos = 0
-        async with self._http.stream(
-            "GET", url, auth=self._auth, follow_redirects=True
-        ) as resposta:
-            resposta.raise_for_status()
-            with destino.open("wb") as arquivo:
-                async for pedaco in resposta.aiter_bytes():
-                    escritos += len(pedaco)
-                    if escritos > limite:
-                        raise _MidiaGrandeDemais
-                    arquivo.write(pedaco)
-        return escritos
 
     # --- saida --------------------------------------------------------------
 
@@ -237,10 +219,6 @@ class TwilioWhatsApp:
             template_key=mensagem.template_key,
             message_sid=resposta.json().get("sid"),
         )
-
-
-class _MidiaGrandeDemais(Exception):
-    """Passou de `doc_max_bytes` no meio do download."""
 
 
 class TwilioWhatsAppAdapter:

@@ -117,6 +117,11 @@ def telefone_do_canal(identidade: str) -> str | None:
     Devolve None para o que nao for um telefone brasileiro reconhecivel — o
     identificador de outro canal, por exemplo.
     """
+    # Contato com numero oculto chega pela Z-API como `...@lid`. E um identificador,
+    # nao um telefone — e os digitos dele poderiam, por acaso, formar um.
+    if "@" in (identidade or ""):
+        return None
+
     digitos = re.sub(r"\D", "", identidade or "")
 
     if not digitos.startswith("55"):

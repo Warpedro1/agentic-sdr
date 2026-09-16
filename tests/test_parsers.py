@@ -110,6 +110,9 @@ def test_telefone_do_canal_repoe_o_nono_digito(identidade, esperado):
         "+14155238886",  # outro pais
         "terminal",  # canal sem endereco
         "+55819999999",  # digitos de menos
+        # Contato com numero oculto, pela Z-API: identificador, nao telefone — os
+        # digitos dele nao podem virar um numero por acaso.
+        "5581991234567@lid",
         "",
     ],
 )

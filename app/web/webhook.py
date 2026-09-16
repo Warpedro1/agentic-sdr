@@ -1,4 +1,4 @@
-"""As rotas que a Twilio chama.
+"""As rotas que os provedores de WhatsApp chamam — Twilio, Meta e Z-API.
 
 Tres coisas acontecem aqui, nesta ordem, e nenhuma delas e negociavel:
 
@@ -24,6 +24,7 @@ from urllib.parse import parse_qsl
 from fastapi import FastAPI, HTTPException, Request, Response
 from sqlalchemy.dialects.postgresql import insert
 
+from app.channels.base import ChannelAdapter, EntradaWhatsApp
 from app.channels.whatsapp_meta import (
     MetaWhatsApp,
     blocos_de,
@@ -31,12 +32,13 @@ from app.channels.whatsapp_meta import (
     numero_id_de,
 )
 from app.channels.whatsapp_twilio import CANAL, TwilioWhatsApp
+from app.channels.whatsapp_zapi import ZApiWhatsApp, motivo_para_ignorar
 from app.composicao import Dependencias, montar_motor
-from app.empresas import EmpresaCtx, por_numero, por_numero_id
+from app.empresas import EmpresaCtx, por_numero, por_numero_id, por_zapi_instancia
 from app.logging import obter_logger
 from app.models import MensagemRecebida
 from app.parsers import telefone_do_canal
-from app.web.assinatura import url_do_webhook, valida, valida_meta
+from app.web.assinatura import url_do_webhook, valida, valida_meta, valida_zapi
 
 logger = obter_logger("webhook")
 
@@ -49,12 +51,14 @@ def criar_app(
     deps: Dependencias,
     twilio: TwilioWhatsApp | None = None,
     meta: MetaWhatsApp | None = None,
+    zapi: ZApiWhatsApp | None = None,
 ) -> FastAPI:
     cliente = twilio or TwilioWhatsApp(deps.config)
-    #: Os dois provedores convivem, e nao ha chave para escolher um: cada caminho
-    #: de entrada responde pelo seu proprio. Quem chamar, atende — e a resposta sai
-    #: por onde a mensagem entrou.
+    #: Os provedores convivem, e nao ha chave para escolher um: cada caminho de
+    #: entrada responde pelo seu proprio. Quem chamar, atende — e a resposta sai por
+    #: onde a mensagem entrou.
     cliente_meta = meta or MetaWhatsApp(deps.config)
+    cliente_zapi = zapi or ZApiWhatsApp(deps.config)
     #: Referencia forte para as tarefas em voo: sem isto o coletor de lixo pode
     #: recolher a tarefa no meio do atendimento.
     em_voo: set[asyncio.Task] = set()
@@ -186,6 +190,67 @@ def criar_app(
             em_voo.add(tarefa)
             tarefa.add_done_callback(em_voo.discard)
 
+        return Response(status_code=204)
+
+    # --- Z-API --------------------------------------------------------------
+
+    @app.post("/webhooks/zapi/{segredo}")
+    async def receber_zapi(segredo: str, request: Request) -> Response:
+        """A mesma ordem dos outros caminhos, com a porta que a Z-API permite.
+
+        A Z-API nao assina: a prova de origem e o segredo no endereco, conferido antes
+        de ler o corpo. Depois vem uma etapa que os outros caminhos nao tem —
+        descartar, ainda sem banco, o que nao e um lead falando com a empresa (o eco
+        do que o proprio numero envia, grupo, status). So entao empresa,
+        idempotencia e atendimento fora da requisicao.
+
+        A mesma rota recebe os avisos de status, entrega e desconexao: e para ela que
+        `update-every-webhooks` aponta todos os webhooks da instancia.
+        """
+        if not valida_zapi(deps.config, segredo):
+            logger.warning("segredo_invalido", origem="zapi")
+            raise HTTPException(status_code=403, detail="segredo invalido")
+
+        try:
+            payload = json.loads((await request.body()).decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("corpo_zapi_ilegivel")
+            return Response(status_code=204)
+        if not isinstance(payload, dict):
+            return Response(status_code=204)
+
+        if payload.get("type") != "ReceivedCallback":
+            _registrar_aviso_zapi(payload)
+            return Response(status_code=204)
+
+        motivo = motivo_para_ignorar(payload)
+        if motivo is not None:
+            logger.info(
+                "mensagem_ignorada",
+                origem="zapi",
+                motivo=motivo,
+                message_sid=payload.get("messageId"),
+            )
+            return Response(status_code=204)
+
+        message_sid = str(payload.get("messageId") or "")
+        empresa = await _empresa_da_instancia_zapi(
+            deps, str(payload.get("instanceId") or ""), message_sid
+        )
+        if empresa is None:
+            return Response(status_code=204)
+
+        if not await _registrar_recebida(deps, message_sid):
+            logger.info("mensagem_repetida", message_sid=message_sid)
+            return Response(status_code=204)
+
+        # Traduzir — inclusive baixar anexo — fica para dentro do turno, como nos
+        # outros caminhos: reentrega e instancia desconhecida nao gastam download.
+        tarefa = asyncio.create_task(
+            _atender_zapi(deps, cliente_zapi, empresa, payload)
+        )
+        em_voo.add(tarefa)
+        tarefa.add_done_callback(em_voo.discard)
         return Response(status_code=204)
 
     return app
@@ -370,6 +435,96 @@ async def _atender_meta(
     # identificada pelo que o canal entregou.
     destino = telefone_do_canal(recebida.identidade) or recebida.identidade
     adaptador = cliente.adaptador(destino, empresa.whatsapp_numero_id or "")
+    await _conduzir_turno(deps, empresa, recebida, adaptador, origem="meta")
+
+
+async def _empresa_da_instancia_zapi(
+    deps: Dependencias, instancia_id: str, message_sid: str
+) -> EmpresaCtx | None:
+    """A empresa dona da instancia que recebeu, no caminho da Z-API.
+
+    Mesmo desvio dos outros caminhos: nao achou, ninguem e atendido e nada e gravado
+    — nem a marca de idempotencia. Instancia nao cadastrada e estado de
+    CONFIGURACAO, nao falha.
+    """
+    async with deps.criar_sessao() as sessao:
+        empresa = await por_zapi_instancia(sessao, instancia_id)
+    if empresa is None:
+        logger.warning(
+            "empresa_desconhecida", instancia_zapi=instancia_id, message_sid=message_sid
+        )
+    return empresa
+
+
+def _registrar_aviso_zapi(payload: Mapping[str, object]) -> None:
+    """Status, entrega e desconexao, que na Z-API chegam pelo mesmo endereco.
+
+    Falha de entrega e desconexao sao erro: sao os dois jeitos de a resposta da
+    Marina nao chegar ao lead sem ninguem ver.
+    """
+    tipo = str(payload.get("type") or "")
+    if tipo == "MessageStatusCallback":
+        logger.info(
+            "status_mensagem",
+            origem="zapi",
+            status=str(payload.get("status") or "").lower(),
+            message_sid=payload.get("ids"),
+            destino=payload.get("phone"),
+        )
+    elif tipo == "DeliveryCallback":
+        erro = payload.get("error")
+        registrar = logger.error if erro else logger.info
+        registrar(
+            "entrega_mensagem",
+            origem="zapi",
+            message_sid=payload.get("messageId"),
+            erro=erro or None,
+            destino=payload.get("phone"),
+        )
+    elif "Disconnected" in tipo:
+        logger.error(
+            "zapi_desconectada",
+            instancia_zapi=payload.get("instanceId"),
+            erro=payload.get("error"),
+            efeito="nenhuma mensagem entra nem sai ate o numero ser reconectado",
+        )
+    else:
+        logger.info("aviso_zapi", tipo=tipo or None)
+
+
+async def _atender_zapi(
+    deps: Dependencias,
+    cliente: ZApiWhatsApp,
+    empresa: EmpresaCtx,
+    payload: Mapping[str, object],
+) -> None:
+    """Um turno da conversa desta empresa, fora da requisicao. Gemeo de `_atender_meta`."""
+    recebida = await cliente.receber_payload(payload)
+    if recebida is None:
+        # Reacao, figurinha, localizacao, contato: nada que responda a pergunta.
+        return
+    if not recebida.identidade:
+        logger.warning("mensagem_sem_remetente", message_sid=recebida.message_sid)
+        return
+
+    # A resposta sai pela instancia da empresa, para o `phone` exatamente como
+    # chegou. Sem lista de destinatarios neste caminho, nao ha motivo para reescrever
+    # o numero — e o `@lid` so funciona devolvido como veio.
+    adaptador = cliente.adaptador(
+        recebida.identidade, empresa.zapi_instancia_id or "", empresa.zapi_token
+    )
+    await _conduzir_turno(deps, empresa, recebida, adaptador, origem="zapi")
+
+
+async def _conduzir_turno(
+    deps: Dependencias,
+    empresa: EmpresaCtx,
+    recebida: EntradaWhatsApp,
+    adaptador: ChannelAdapter,
+    origem: str,
+) -> None:
+    """O que todo caminho faz depois de traduzir a mensagem e escolher por onde
+    responder: um passo do engine, o registro, e a limpeza do anexo temporario."""
     motor = montar_motor(deps, adaptador, empresa)
     try:
         conversa_id = await motor.atender(recebida.identidade, recebida.entrada)
@@ -379,7 +534,7 @@ async def _atender_meta(
             empresa=empresa.slug,
             message_sid=recebida.message_sid,
             perfil=recebida.profile_name,
-            origem="meta",
+            origem=origem,
         )
     except Exception as erro:  # noqa: BLE001 - a rota ja respondeu; so registrar
         logger.error(

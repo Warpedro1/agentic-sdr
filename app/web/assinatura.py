@@ -1,13 +1,14 @@
-"""Assinatura dos webhooks — Twilio e Meta.
+"""Autenticidade dos webhooks — Twilio, Meta e Z-API.
 
-Os dois provedores assinam cada chamada, e por isso os dois caminhos de entrada
-tem a MESMA primeira porta: sem assinatura valida, nada acontece. O que muda e o
-material assinado, e vale conhecer a diferenca:
+Os tres caminhos de entrada tem a MESMA primeira porta: sem prova de origem, nada
+acontece. O que muda e o material que prova, e vale conhecer a diferenca:
 
 - Twilio assina a URL somada aos campos do formulario (HMAC-SHA1).
 - Meta assina o CORPO CRU (HMAC-SHA256). Por isso o corpo precisa ser lido em
   bytes e conferido ANTES de virar JSON: reserializar muda o texto e derruba a
   assinatura.
+- Z-API nao assina nada. A prova e um segredo no endereco do webhook, que so ela
+  conhece — mais fraco que assinatura, e por isso nunca escrito em log.
 
 --- o modulo original ---
 
@@ -101,3 +102,23 @@ def valida_meta(config: Configuracao, corpo: bytes, assinatura: str | None) -> b
     ).hexdigest()
     recebido = assinatura.removeprefix("sha256=").strip()
     return hmac.compare_digest(esperado, recebido)
+
+
+def valida_zapi(config: Configuracao, segredo: str) -> bool:
+    """Confere o segredo que veio no endereco do webhook da Z-API.
+
+    A Z-API nao assina as chamadas nem manda cabecalho de autenticacao: o unico
+    material que prova a origem e o endereco, que so ela conhece. Quem vir o
+    endereco consegue forjar uma chamada, e por isso o segredo e mascarado em todo
+    log (`app/logging.py`) e deve ser longo e aleatorio.
+
+    Sem segredo configurado, recusa — aceitar seria abrir o endereco para todos.
+    Nao ha chave para desligar a conferencia, nem para teste: o teste configura um.
+    """
+    esperado = config.zapi_webhook_segredo
+    if not esperado:
+        logger.error("segredo_sem_configuracao", origem="zapi")
+        return False
+    return hmac.compare_digest(
+        esperado.encode("utf-8"), (segredo or "").encode("utf-8")
+    )

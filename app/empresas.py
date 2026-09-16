@@ -20,6 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Empresa
 from app.segredos import ler as ler_segredo
 
+#: Prefixo da variavel de ambiente com o token da instancia da Z-API.
+PREFIXO_TOKEN_ZAPI = "ZAPI_TOKEN_"
+
 
 class EmpresaDesconhecida(Exception):
     """Pediram uma empresa que nao existe, ou nao disseram qual entre varias."""
@@ -45,6 +48,11 @@ class EmpresaCtx:
     #: no fim, com padrao, para quem ja constroi uma empresa sem ele continuar
     #: funcionando — a Twilio e o terminal nao precisam deste campo.
     whatsapp_numero_id: str | None = None
+    #: Identificador da instancia na Z-API: a chave de roteamento daquele caminho.
+    zapi_instancia_id: str | None = None
+    #: Token da instancia, lido de `ZAPI_TOKEN_<SLUG>`. Vai na URL de envio da Z-API,
+    #: e por isso tem o mesmo cuidado do token do juridico.
+    zapi_token: str = field(default="", repr=False)
 
     @property
     def curto(self) -> str:
@@ -52,9 +60,13 @@ class EmpresaCtx:
         return self.nome_curto or self.nome
 
 
-def slug_para_env(slug: str) -> str:
-    """O nome da variavel de ambiente que carrega o token desta empresa."""
-    return "JURIDICO_TOKEN_" + slug.upper().replace("-", "_")
+def slug_para_env(slug: str, prefixo: str = "JURIDICO_TOKEN_") -> str:
+    """O nome da variavel de ambiente que carrega um token desta empresa.
+
+    O prefixo diz QUAL token: `JURIDICO_TOKEN_` para o CRM, `ZAPI_TOKEN_` para a
+    instancia da Z-API.
+    """
+    return prefixo + slug.upper().replace("-", "_")
 
 
 def _congelar(linha: Empresa) -> EmpresaCtx:
@@ -69,6 +81,14 @@ def _congelar(linha: Empresa) -> EmpresaCtx:
         juridico_base_url=linha.juridico_base_url,
         juridico_token=ler_segredo(linha.juridico_token_env),
         crm_empresa_id=linha.crm_empresa_id,
+        zapi_instancia_id=linha.zapi_instancia_id,
+        # So quem tem instancia carrega o token: empresa sem Z-API nao guarda na
+        # memoria um segredo que nunca vai usar.
+        zapi_token=(
+            ler_segredo(slug_para_env(linha.slug, PREFIXO_TOKEN_ZAPI))
+            if linha.zapi_instancia_id
+            else ""
+        ),
     )
 
 
@@ -109,6 +129,26 @@ async def por_numero_id(sessao: AsyncSession, numero_id: str) -> EmpresaCtx | No
     linha = await sessao.scalar(
         select(Empresa).where(
             Empresa.whatsapp_numero_id == limpo, Empresa.ativo.is_(True)
+        )
+    )
+    return _congelar(linha) if linha else None
+
+
+async def por_zapi_instancia(
+    sessao: AsyncSession, instancia_id: str
+) -> EmpresaCtx | None:
+    """A empresa dona da instancia que recebeu, quando quem entrega e a Z-API.
+
+    Gemeo de `por_numero_id`, com a chave daquele provedor: o `instanceId` que vem
+    em toda chamada. Casar pelo `connectedPhone` seria pior pelo mesmo motivo de la —
+    formato sem garantia —, e ainda confundiria com o numero de outro caminho.
+    """
+    limpo = (instancia_id or "").strip()
+    if not limpo:
+        return None
+    linha = await sessao.scalar(
+        select(Empresa).where(
+            Empresa.zapi_instancia_id == limpo, Empresa.ativo.is_(True)
         )
     )
     return _congelar(linha) if linha else None

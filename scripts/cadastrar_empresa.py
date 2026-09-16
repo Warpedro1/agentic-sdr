@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.aio import executar, forcar_utf8
 from app.db import encerrar, obter_engine
-from app.empresas import slug_para_env
+from app.empresas import PREFIXO_TOKEN_ZAPI, slug_para_env
 from app.integrations.juridico.cliente import ClienteJuridico, ErroJuridico
 from app.logging import configurar_logging
 from app.models import Consultor, CrmOutbox, Empresa, RegraDisponibilidade
@@ -49,6 +49,10 @@ def montar_argumentos() -> argparse.Namespace:
     parser.add_argument(
         "--whatsapp-id",
         help="identificador do número na Meta (phone_number_id), para o caminho da Cloud API",
+    )
+    parser.add_argument(
+        "--zapi-instancia",
+        help="id da instância na Z-API; o token dela vai no .env como ZAPI_TOKEN_<SLUG>",
     )
     parser.add_argument("--base-url", help="endereço do juridico dessa empresa")
     parser.add_argument(
@@ -97,6 +101,7 @@ async def _diagnostico(sessao) -> int:
         print(f"  citada como   {empresa.nome_curto or empresa.nome}")
         print(f"  whatsapp      {empresa.whatsapp_numero or '(sem número — não recebe)'}")
         print(f"  meta          {empresa.whatsapp_numero_id or '(sem id — não recebe pela Meta)'}")
+        print(f"  zapi          {empresa.zapi_instancia_id or '(sem instância — não recebe pela Z-API)'}")
         print(f"  juridico      {empresa.juridico_base_url or '(sem endereço)'}")
         estado = "ligada" if empresa.juridico_ativo else "desligada"
         # Nunca o valor da credencial: só se ela está presente.
@@ -105,8 +110,14 @@ async def _diagnostico(sessao) -> int:
         print(f"  consultores   {ativos or 0} ativos, {com_agenda or 0} com agenda")
         print(f"  fila          {pendentes or 0} por entregar")
 
-        if empresa.ativo and not (empresa.whatsapp_numero or empresa.whatsapp_numero_id):
-            print("  ! sem número nem id da Meta: nenhuma mensagem será atribuída a ela")
+        if empresa.ativo and not (
+            empresa.whatsapp_numero or empresa.whatsapp_numero_id or empresa.zapi_instancia_id
+        ):
+            print("  ! sem número, id da Meta nem instância da Z-API: nenhuma mensagem será atribuída a ela")
+        variavel_zapi = slug_para_env(empresa.slug, PREFIXO_TOKEN_ZAPI)
+        if empresa.zapi_instancia_id and not ler_segredo(variavel_zapi):
+            # Nunca o valor: só se ele está presente.
+            print(f"  ! token da instância AUSENTE ({variavel_zapi}): a Marina recebe e não responde")
         if empresa.juridico_ativo and not token:
             print("  ! credencial ausente: a integração fica desligada em silêncio")
         if (ativos or 0) and not (com_agenda or 0):
@@ -211,6 +222,9 @@ async def _gravar(sessao, args: argparse.Namespace, slug: str) -> int:
     numero_id = (
         args.whatsapp_id or (existente.whatsapp_numero_id if existente else "") or ""
     ).strip()
+    instancia_zapi = (
+        args.zapi_instancia or (existente.zapi_instancia_id if existente else "") or ""
+    ).strip()
 
     if existente is None:
         existente = Empresa(slug=slug)
@@ -220,6 +234,7 @@ async def _gravar(sessao, args: argparse.Namespace, slug: str) -> int:
     existente.ativo = True
     existente.whatsapp_numero = numero or None
     existente.whatsapp_numero_id = numero_id or None
+    existente.zapi_instancia_id = instancia_zapi or None
     existente.juridico_base_url = base_url
     existente.juridico_token_env = nome_env
     existente.juridico_ativo = not args.sem_juridico
@@ -229,8 +244,8 @@ async def _gravar(sessao, args: argparse.Namespace, slug: str) -> int:
     await sessao.commit()
 
     print(f'\nEmpresa "{slug}" pronta: {nome} (citada como "{curto}").')
-    if not numero and not numero_id:
-        print("! Sem número nem id da Meta: nenhuma mensagem será atribuída a ela.")
+    if not numero and not numero_id and not instancia_zapi:
+        print("! Sem número, id da Meta nem instância da Z-API: nenhuma mensagem será atribuída a ela.")
     print("\nPróximos passos:")
     if numero:
         print(f"  1. No Console da Twilio, aponte {numero} para")
@@ -238,6 +253,9 @@ async def _gravar(sessao, args: argparse.Namespace, slug: str) -> int:
     if numero_id:
         print("  1. No app da Meta, aponte o webhook para")
         print("     <endereço público>/webhooks/meta/whatsapp  (assine o campo messages)")
+    if instancia_zapi:
+        print(f"  1. Ponha no .env: {slug_para_env(slug, PREFIXO_TOKEN_ZAPI)}=<token da instância>")
+        print(f"     e rode: python scripts/configurar_webhook_zapi.py --empresa {slug} --url-publica <endereço público>")
     print(f"  2. python scripts/sync_consultores.py --empresa {slug}")
     print(f"  3. python scripts/configurar_agenda.py --empresa {slug}")
     print("  4. python scripts/cadastrar_empresa.py --listar\n")

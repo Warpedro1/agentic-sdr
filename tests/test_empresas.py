@@ -12,11 +12,13 @@ import uuid
 import pytest
 
 from app.empresas import (
+    PREFIXO_TOKEN_ZAPI,
     EmpresaCtx,
     EmpresaDesconhecida,
     listar_ativas,
     por_numero,
     por_slug,
+    por_zapi_instancia,
     resolver_argumento,
     slug_para_env,
 )
@@ -50,6 +52,8 @@ def test_o_token_nao_aparece_na_representacao_da_empresa():
         juridico_ativo=True,
         juridico_base_url="https://acme.test",
         juridico_token="1|SEGREDO-QUE-NAO-PODE-VAZAR",
+        zapi_instancia_id="INST-1",
+        zapi_token="OUTRO-SEGREDO-DA-ZAPI",
     )
     assert "SEGREDO" not in repr(empresa)
 
@@ -58,6 +62,7 @@ def test_o_nome_da_variavel_de_ambiente_sai_do_slug():
     assert slug_para_env("acme") == "JURIDICO_TOKEN_ACME"
     # Hífen não é válido em nome de variável de ambiente.
     assert slug_para_env("acme-sp") == "JURIDICO_TOKEN_ACME_SP"
+    assert slug_para_env("acme-sp", PREFIXO_TOKEN_ZAPI) == "ZAPI_TOKEN_ACME_SP"
 
 
 def test_citar_a_empresa_cai_para_o_nome_completo_sem_nome_curto():
@@ -120,6 +125,46 @@ async def test_numero_vazio_nao_casa_com_empresa_sem_numero(sessao_db):
 
     assert await por_numero(sessao_db, "") is None
     assert await por_numero(sessao_db, "whatsapp:") is None
+
+
+# --- de quem e esta instancia da Z-API ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_instancia_da_zapi_identifica_a_empresa_e_traz_o_token(
+    sessao_db, monkeypatch
+):
+    """O token vem do ambiente, pelo nome derivado do slug — nunca do banco."""
+    monkeypatch.setenv("ZAPI_TOKEN_ACME", "token-da-instancia")
+    sessao_db.add(_linha(zapi_instancia_id="INST-1"))
+    await sessao_db.commit()
+
+    achada = await por_zapi_instancia(sessao_db, "INST-1")
+    assert achada is not None
+    assert achada.slug == "acme"
+    assert achada.zapi_token == "token-da-instancia"
+    assert await por_zapi_instancia(sessao_db, "DE-NINGUEM") is None
+    assert await por_zapi_instancia(sessao_db, "") is None
+
+
+@pytest.mark.asyncio
+async def test_instancia_de_empresa_desativada_nao_recebe_mensagem(sessao_db):
+    sessao_db.add(_linha(zapi_instancia_id="INST-1", ativo=False))
+    await sessao_db.commit()
+
+    assert await por_zapi_instancia(sessao_db, "INST-1") is None
+
+
+@pytest.mark.asyncio
+async def test_empresa_sem_instancia_nao_carrega_token_da_zapi(sessao_db, monkeypatch):
+    """Quem não atende pela Z-API não guarda na memória um segredo que nunca usa."""
+    monkeypatch.setenv("ZAPI_TOKEN_ACME", "token-da-instancia")
+    sessao_db.add(_linha())
+    await sessao_db.commit()
+
+    empresa = await por_slug(sessao_db, "acme")
+    assert empresa is not None
+    assert empresa.zapi_token == ""
 
 
 # --- qual empresa a ferramenta deve usar ----------------------------------

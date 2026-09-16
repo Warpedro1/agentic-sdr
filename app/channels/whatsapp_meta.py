@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from app.channels.base import Anexo, EntradaWhatsApp, InboundMessage, MensagemSaida
+from app.channels.midia import MidiaGrandeDemais, baixar_com_limite
 from app.config import Configuracao, obter_configuracao
 from app.logging import obter_logger
 
@@ -190,8 +191,15 @@ class MetaWhatsApp:
         destino = Path(tempfile.gettempdir()) / f"marina-{uuid.uuid4().hex}{extensao}"
         try:
             url = await self._url_da_midia(media_id)
-            tamanho = await self._baixar(url, destino)
-        except _MidiaGrandeDemais:
+            tamanho = await baixar_com_limite(
+                self._http,
+                url,
+                destino,
+                self._config.doc_max_bytes,
+                # A URL de download tambem exige o token: e temporaria, nao publica.
+                headers=self._cabecalhos,
+            )
+        except MidiaGrandeDemais:
             logger.warning(
                 "midia_recusada",
                 motivo="acima do limite",
@@ -218,27 +226,6 @@ class MetaWhatsApp:
         resposta = await self._http.get(url, headers=self._cabecalhos)
         resposta.raise_for_status()
         return str(resposta.json().get("url") or "")
-
-    async def _baixar(self, url: str, destino: Path) -> int:
-        """Grava a midia em `destino` e devolve o tamanho.
-
-        A URL de download tambem exige o token — ela e temporaria, mas nao publica.
-        O tamanho e conferido DURANTE o download, para um arquivo enorme nao encher
-        o disco antes de alguem reparar.
-        """
-        limite = self._config.doc_max_bytes
-        escritos = 0
-        async with self._http.stream(
-            "GET", url, headers=self._cabecalhos, follow_redirects=True
-        ) as resposta:
-            resposta.raise_for_status()
-            with destino.open("wb") as arquivo:
-                async for pedaco in resposta.aiter_bytes():
-                    escritos += len(pedaco)
-                    if escritos > limite:
-                        raise _MidiaGrandeDemais
-                    arquivo.write(pedaco)
-        return escritos
 
     # --- saida --------------------------------------------------------------
 
@@ -340,10 +327,6 @@ def _detalhe_meta(erro: Exception) -> dict[str, object]:
         if isinstance(detalhes, dict) and detalhes.get("details"):
             detalhe["meta_detalhe"] = detalhes["details"]
     return detalhe
-
-
-class _MidiaGrandeDemais(Exception):
-    """Passou de `doc_max_bytes` no meio do download."""
 
 
 class MetaWhatsAppAdapter:

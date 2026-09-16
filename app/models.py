@@ -91,6 +91,11 @@ class Empresa(Base):
     #: unico ao mesmo tempo, para conviver com empresa que so atende pela Twilio ou
     #: so pelo terminal.
     whatsapp_numero_id: Mapped[str | None] = mapped_column(String(40))
+    #: O identificador da instancia na Z-API. Mesmo papel do `whatsapp_numero_id` no
+    #: caminho da Meta: vem em toda mensagem recebida (`instanceId`) e e por ele que a
+    #: mensagem encontra a empresa. O TOKEN da instancia nao mora aqui — fica em
+    #: `ZAPI_TOKEN_<SLUG>`, pelo mesmo motivo do token do juridico.
+    zapi_instancia_id: Mapped[str | None] = mapped_column(String(64))
 
     juridico_ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     juridico_base_url: Mapped[str] = mapped_column(
@@ -116,6 +121,7 @@ class Empresa(Base):
         UniqueConstraint("slug", name="uq_empresas_slug"),
         Index("uq_empresas_whatsapp_numero", "whatsapp_numero", unique=True),
         Index("uq_empresas_whatsapp_numero_id", "whatsapp_numero_id", unique=True),
+        Index("uq_empresas_zapi_instancia_id", "zapi_instancia_id", unique=True),
     )
 
 

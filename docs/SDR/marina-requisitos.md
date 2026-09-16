@@ -1,9 +1,9 @@
 # Marina — Especificação de Requisitos de Software
 
 > **Norma:** ISO/IEC/IEEE 29148:2018, estrutura de SRS (cláusula 9.6).
-> **Versão:** 1.0 · 15/09/2026 · **Situação:** linha de base.
+> **Versão:** 1.1 · 15/09/2026 · **Situação:** linha de base + canal Z-API.
 >
-> **Fonte da verdade:** o código em `main` e a suíte `pytest` (413 testes). Os
+> **Fonte da verdade:** o código em `main` e a suíte `pytest` (453 testes). Os
 > requisitos foram levantados do comportamento implementado e rastreados até o teste
 > que o comprova. Onde este documento e `marina-regras-de-negocio.md` divergem, vale
 > este — as divergências estão no [Apêndice C](#apêndice-c--divergências-com-documentos-anteriores).
@@ -49,7 +49,7 @@ A **Marina** (repositório `agentic-sdr`) é uma automação **determinística**
 ou renegociação de contrato de empréstimo, **captura e qualifica o lead** e entrega
 **uma reunião agendada** com um consultor humano, registrando tudo no CRM da empresa.
 
-**Dentro do escopo:** conversa por terminal e por WhatsApp (Twilio e Meta Cloud API);
+**Dentro do escopo:** conversa por terminal e por WhatsApp (Twilio, Meta Cloud API e Z-API);
 coleta e validação de dados; guardrails; reconhecimento de retorno e descadastro;
 recebimento e arquivamento de contrato; cálculo de horários e reserva; entrega ao CRM
 `base-crm-juridico`; atendimento de várias empresas por uma instalação.
@@ -73,8 +73,8 @@ bloqueios e férias de consultor; painel web próprio; atendimento por e-mail.
                 └──────────────────────────────────────────────────────────────┘   (base-crm-juridico)
 ```
 
-A Marina é um sistema independente. Ela depende de: um provedor de WhatsApp (Twilio
-ou Meta), um PostgreSQL, um disco local para contratos e, opcionalmente, uma
+A Marina é um sistema independente. Ela depende de: um provedor de WhatsApp (Twilio,
+Meta ou Z-API), um PostgreSQL, um disco local para contratos e, opcionalmente, uma
 instalação do `base-crm-juridico` por empresa atendida.
 
 #### 1.3.2 Funções do produto
@@ -106,6 +106,9 @@ instalação do `base-crm-juridico` por empresa atendida.
   dentro da janela de 24 h aberta pelo lead. Pela Meta, **número estrangeiro não
   entrega mensagem a usuário brasileiro** (erro 130497), nem como resposta —
   observado em 11/09/2026.
+- **Z-API não é a API oficial:** conecta o número como aparelho do WhatsApp Web, por
+  QR code. O número precisa estar ativo num aplicativo WhatsApp, a instância cai se
+  o celular perder a sessão, e o WhatsApp pode restringir número que automatiza envio.
 - **LGPD** (Lei 13.709/2018): tratamento de dados pessoais de leads.
 - **CRM:** o `base-crm-juridico` exige telefone para criar negociação e aceita um
   conjunto fixo de 11 fontes.
@@ -164,6 +167,8 @@ instalação do `base-crm-juridico` por empresa atendida.
 | RI-06 | Toda chamada ao CRM deve ter tempo limite configurável (`JURIDICO_TIMEOUT_S`, padrão 15 s). | I: `app/config.py` |
 | RI-07 | O texto enviado ao lead deve vir do catálogo `app/messages.yaml`, editável sem alterar código. | T: `guards::test_todas_as_chaves_usadas_existem` |
 | RI-08 | A operação deve dispor de scripts para: cadastrar e listar empresas, importar consultores do CRM, configurar agenda, forçar e reprocessar a fila, consultar um lead e simular webhook assinado. | D: `scripts/` |
+| RI-09 | A Marina deve receber da Z-API em `POST /webhooks/zapi/{segredo}` (mensagens e avisos de status, entrega e desconexão) e enviar respostas em `POST /instances/{instância}/token/{token}/send-text`, com o cabeçalho `Client-Token` quando configurado. | T: `webhook_zapi::test_primeira_mensagem_abre_a_conversa_e_responde_pela_instancia` · `whatsapp_zapi::test_envio_monta_a_chamada_da_z_api` |
+| RI-10 | O operador deve conseguir conferir a conexão da instância e apontar todos os webhooks dela para a Marina com um único comando. | D: `scripts/configurar_webhook_zapi.py` · T: `whatsapp_zapi::test_apontar_webhooks_grava_o_endereco_em_todos` |
 
 ### 3.2 Requisitos funcionais
 
@@ -229,7 +234,7 @@ instalação do `base-crm-juridico` por empresa atendida.
 |---|---|---|---|
 | RF-DOC-01 | Se o lead tiver o contrato, a Marina deve pedir o envio e aceitar `pular`, `pula`, `depois` ou `skip` para seguir sem ele. | — | T: `machine::test_tem_contrato_sim_pede_o_arquivo` · `machine::test_pular_o_envio` |
 | RF-DOC-02 | O arquivo recebido deve ser arquivado sem leitura do conteúdo, em diretório do lead, com nome gerado, registrando tipo e tamanho. | A análise do contrato é sempre humana. | T: `engine::test_documento_e_arquivado_e_registrado` |
-| RF-DOC-03 | Só devem ser aceitos arquivos não vazios, de até `DOC_MAX_BYTES` (padrão 16 MiB) e com extensão em `DOC_EXTENSOES` (padrão pdf, jpg, jpeg, png, doc, docx); mídia de tipo não aceito não deve ser baixada. | 16 MiB é o teto da Twilio por mensagem. | T: `whatsapp_adaptador::test_arquivo_acima_do_limite_e_abortado_no_meio` · `whatsapp_meta::test_midia_de_tipo_nao_aceito_nem_chega_a_ser_baixada` |
+| RF-DOC-03 | Só devem ser aceitos arquivos não vazios, de até `DOC_MAX_BYTES` (padrão 16 MiB) e com extensão em `DOC_EXTENSOES` (padrão pdf, jpg, jpeg, png, doc, docx); mídia de tipo não aceito não deve ser baixada. | 16 MiB é o teto da Twilio por mensagem. | T: `whatsapp_adaptador::test_arquivo_acima_do_limite_e_abortado_no_meio` · `whatsapp_meta::test_midia_de_tipo_nao_aceito_nem_chega_a_ser_baixada` · `whatsapp_zapi::test_midia_de_tipo_nao_aceito_nem_chega_a_ser_baixada` |
 | RF-DOC-04 | A confirmação de recebimento deve dizer que a análise é feita por um consultor, nunca automaticamente. | — | T: `machine::test_contrato_recebido_diz_que_a_analise_e_humana` |
 | RF-DOC-05 | Caminho de arquivo inexistente (terminal) deve receber mensagem específica, não "não entendi". | Evita gastar as tentativas às cegas. | T: `engine::test_caminho_errado_diz_o_que_houve_em_vez_de_nao_entendi` |
 | RF-DOC-06 | Falha ao baixar uma mídia não deve impedir o processamento da mensagem. | — | T: `whatsapp_adaptador::test_midia_que_nao_baixa_nao_derruba_a_mensagem` |
@@ -267,22 +272,25 @@ instalação do `base-crm-juridico` por empresa atendida.
 | ID | Requisito | Justificativa | Verificação |
 |---|---|---|---|
 | RF-WA-01 | A primeira mensagem de uma identidade deve abrir a conversa e disparar a saudação, sem ser consumida como resposta. | — | T: `engine_atender::test_primeira_mensagem_abre_a_conversa_e_so_saúda` |
-| RF-WA-02 | Mensagem com id externo já processado não deve gerar novo passo da conversa. | Provedores reentregam. | T: `webhook_twilio::test_message_sid_repetido_nao_vira_dois_passos` · `webhook_meta::test_mensagem_repetida_nao_vira_dois_passos` |
+| RF-WA-02 | Mensagem com id externo já processado não deve gerar novo passo da conversa. | Provedores reentregam. | T: `webhook_twilio::test_message_sid_repetido_nao_vira_dois_passos` · `webhook_meta::test_mensagem_repetida_nao_vira_dois_passos` · `webhook_zapi::test_mensagem_repetida_nao_vira_dois_passos` |
 | RF-WA-03 | Deve existir no máximo uma conversa aberta por identidade por empresa, e mensagens simultâneas da mesma identidade devem ser processadas em série. | — | T: `engine_atender::test_duas_mensagens_juntas_nao_duplicam_a_conversa` |
-| RF-WA-04 | A resposta deve sair pelo número da empresa que recebeu a mensagem e pelo mesmo provedor por onde ela chegou. | Senão o lead recebe mensagem de número para o qual não escreveu. | T: `webhook_twilio::test_a_resposta_sai_pelo_numero_da_empresa` · `webhook_meta::test_primeira_mensagem_abre_a_conversa_e_responde_pelo_numero_da_empresa` |
+| RF-WA-04 | A resposta deve sair pelo número da empresa que recebeu a mensagem e pelo mesmo provedor por onde ela chegou. | Senão o lead recebe mensagem de número para o qual não escreveu. | T: `webhook_twilio::test_a_resposta_sai_pelo_numero_da_empresa` · `webhook_meta::test_primeira_mensagem_abre_a_conversa_e_responde_pelo_numero_da_empresa` · `webhook_zapi::test_primeira_mensagem_abre_a_conversa_e_responde_pela_instancia` |
 | RF-WA-05 | Pela Meta, a resposta a celular brasileiro deve ser endereçada ao número com o nono dígito; números de outros países devem ser respondidos como chegaram. | A lista de destinatários do número de teste compara o texto literal. | T: `webhook_meta::test_numero_de_fora_do_brasil_recebe_resposta_como_chegou` |
 | RF-WA-06 | Avisos de entrega devem ser registrados; falhas devem registrar código e motivo do provedor; aviso de entrega não deve abrir conversa. | É o único lugar onde o motivo de uma mensagem não entregue existe. | T: `webhook_twilio::test_status_de_falha_e_registrado` · `webhook_meta::test_aviso_de_entrega_nao_abre_conversa` · `whatsapp_meta::test_o_motivo_da_meta_chega_ao_log` |
-| RF-WA-07 | Mensagens sem conteúdo tratável (reação, figurinha, localização, texto vazio) devem ser ignoradas sem contar tentativa. | Reagir com emoji não pode escalar o lead. | T: `whatsapp_meta::test_reacao_nao_queima_tentativa_do_lead` · `whatsapp_adaptador::test_mensagem_vazia_nao_vira_texto_em_branco` |
-| RF-WA-08 | Falha no envio de uma resposta não deve interromper o processamento do turno. | — Ver PROP-05. | T: `whatsapp_meta::test_falha_de_envio_nao_derruba_o_turno` · `whatsapp_adaptador::test_falha_de_envio_nao_derruba_o_turno` |
+| RF-WA-07 | Mensagens sem conteúdo tratável (reação, figurinha, localização, texto vazio) devem ser ignoradas sem contar tentativa. | Reagir com emoji não pode escalar o lead. | T: `whatsapp_meta::test_reacao_nao_queima_tentativa_do_lead` · `whatsapp_adaptador::test_mensagem_vazia_nao_vira_texto_em_branco` · `whatsapp_zapi::test_reacao_figurinha_e_localizacao_nao_viram_mensagem` |
+| RF-WA-08 | Falha no envio de uma resposta não deve interromper o processamento do turno. | — Ver PROP-05. | T: `whatsapp_meta::test_falha_de_envio_nao_derruba_o_turno` · `whatsapp_adaptador::test_falha_de_envio_nao_derruba_o_turno` · `whatsapp_zapi::test_resposta_200_com_erro_e_falha` |
 | RF-WA-09 | Pela Meta, o aperto de mão deve devolver o desafio quando o token de verificação conferir e responder 403 caso contrário. | — | T: `webhook_meta::test_aperto_de_mao_devolve_o_desafio` · `webhook_meta::test_aperto_de_mao_com_token_errado_e_403` |
 | RF-WA-10 | Pela Meta, todos os blocos de uma mesma chamada devem ser processados. | A Meta agrupa entregas; tratar só o primeiro perderia mensagens. | T: `whatsapp_meta::test_todos_os_blocos_sao_percorridos_e_lixo_e_ignorado` |
+| RF-WA-11 | Pela Z-API, mensagens enviadas pelo próprio número, de grupo, de canal, de lista de transmissão, resposta a status ou ainda não decifradas devem ser ignoradas antes de qualquer acesso ao banco. | O número conectado continua vivo no aplicativo; sem o filtro, o eco de cada resposta da Marina viraria mensagem nova. | T: `whatsapp_zapi::test_o_que_nao_e_lead_falando_com_a_empresa_e_ignorado` · `webhook_zapi::test_eco_do_proprio_numero_e_ignorado_sem_tocar_no_banco` |
+| RF-WA-12 | Pela Z-API, contato identificado só por `@lid` deve ser atendido sem ter o identificador tomado por telefone, e a resposta deve ir para o `phone` exatamente como chegou. | Os dígitos do `@lid` poderiam formar um telefone por acaso. | T: `whatsapp_zapi::test_contato_com_numero_oculto_nao_vira_telefone` · `parsers::test_telefone_do_canal_recusa_o_que_nao_reconhece` |
+| RF-WA-13 | Pela Z-API, avisos de status devem ser registrados; falha de entrega e desconexão da instância devem ser registradas como erro; nenhum aviso deve abrir conversa. | Desconexão é o jeito de a Marina parar de responder sem ninguém ver. | T: `webhook_zapi::test_aviso_de_status_nao_abre_conversa_nem_toca_no_banco` · I: `_registrar_aviso_zapi` em `app/web/webhook.py` |
 
 #### 3.2.9 Várias empresas (RF-EMP)
 
 | ID | Requisito | Justificativa | Verificação |
 |---|---|---|---|
-| RF-EMP-01 | A mensagem deve ser atribuída à empresa pelo número que a recebeu (Twilio) ou pelo id do número (Meta). | — | T: `webhook_twilio::test_a_mensagem_e_atribuida_a_empresa_do_numero_que_a_recebeu` · `empresas::test_o_numero_que_recebeu_a_mensagem_identifica_a_empresa` |
-| RF-EMP-02 | Mensagem para número não cadastrado ou de empresa desativada deve ser respondida com 204, registrada em log e não deixar nenhum outro rastro. | Quem chama é o provedor; erro só geraria reentrega. | T: `webhook_meta::test_numero_nao_cadastrado_nao_deixa_rastro` · `webhook_twilio::test_empresa_desativada_deixa_de_ser_atendida` |
+| RF-EMP-01 | A mensagem deve ser atribuída à empresa pelo número que a recebeu (Twilio), pelo id do número (Meta) ou pelo id da instância (Z-API). | — | T: `webhook_twilio::test_a_mensagem_e_atribuida_a_empresa_do_numero_que_a_recebeu` · `empresas::test_o_numero_que_recebeu_a_mensagem_identifica_a_empresa` · `empresas::test_a_instancia_da_zapi_identifica_a_empresa_e_traz_o_token` |
+| RF-EMP-02 | Mensagem para número não cadastrado ou de empresa desativada deve ser respondida com 204, registrada em log e não deixar nenhum outro rastro. | Quem chama é o provedor; erro só geraria reentrega. | T: `webhook_meta::test_numero_nao_cadastrado_nao_deixa_rastro` · `webhook_twilio::test_empresa_desativada_deixa_de_ser_atendida` · `webhook_zapi::test_instancia_nao_cadastrada_nao_deixa_rastro` |
 | RF-EMP-03 | Cadastro, conversa e descadastro devem ser independentes por empresa: o mesmo telefone em duas empresas gera dois cadastros, e sair de uma não suprime na outra. | Cada instalação é um escritório diferente; o dado de um não é do outro. | T: `multiempresa::test_o_mesmo_telefone_em_duas_empresas_gera_dois_cadastros` · `multiempresa::test_sair_de_uma_empresa_nao_bloqueia_a_outra` |
 | RF-EMP-04 | Só devem ser ofertados e reservados horários de consultores da empresa da conversa. | — | T: `multiempresa::test_so_sao_ofertados_horarios_de_profissional_da_empresa` · `multiempresa::test_reservar_recusa_profissional_de_outra_empresa` |
 | RF-EMP-05 | Cada item da fila deve ser entregue apenas ao CRM da empresa de origem; item de lead de outra empresa deve falhar em definitivo. | Era o vazamento mais grave: dado de um escritório no CRM do outro. | T: `multiempresa::test_o_entregador_de_uma_empresa_nao_consome_item_da_outra` · `multiempresa::test_item_com_lead_de_outra_empresa_falha_em_definitivo` |
@@ -324,11 +332,11 @@ aguardam valor ([Apêndice B.2](#b2-valores-a-definir)).
 | RD-01 | Datas e horas devem ser gravadas em UTC com fuso; a conversão para o fuso de exibição deve ocorrer só na apresentação. | I: `app/models.py` |
 | RD-02 | A transcrição deve ser ordenada por número de sequência, não por data de gravação. | I: `mensagens.sequencia` |
 | RD-03 | `empresa_id` deve ser obrigatório em `leads`, `conversas`, `consultores`, `regras_disponibilidade`, `opt_outs` e `crm_outbox`. | I: `app/models.py` · T: `multiempresa::test_a_fila_registra_para_qual_empresa_o_item_vai` |
-| RD-04 | O banco deve garantir unicidade de: telefone por empresa; conversa aberta por identidade por empresa; e-mail de consultor por empresa; mensagem recebida por canal e id externo; agendamento ativo por consultor e início. | T: `reserva::test_segunda_reserva_no_mesmo_horario_e_recusada` · `multiempresa::test_o_mesmo_telefone_em_duas_empresas_gera_dois_cadastros` |
+| RD-04 | O banco deve garantir unicidade de: telefone por empresa; conversa aberta por identidade por empresa; e-mail de consultor por empresa; mensagem recebida por canal e id externo; agendamento ativo por consultor e início; instância da Z-API em uma empresa só. | T: `reserva::test_segunda_reserva_no_mesmo_horario_e_recusada` · `multiempresa::test_o_mesmo_telefone_em_duas_empresas_gera_dois_cadastros` |
 | RD-05 | Regra de disponibilidade deve referenciar o consultor por chave composta (consultor, empresa). | I: `app/models.py` |
 | RD-06 | O contexto persistido da conversa não deve conter dados transitórios (objetos ricos ou resultado de I/O recém-feito). | T: `engine::test_contexto_persistido_nao_leva_lixo_transitorio` |
 | RD-07 | O identificador externo de mensagem deve comportar até 255 caracteres. | T: `webhook_meta` (fixture `WAMID_REAL`, 78 caracteres) |
-| RD-08 | O esquema deve evoluir apenas por migrações Alembic versionadas; a versão atual é `0009_id_externo_da_meta`. | I: `alembic/versions/` |
+| RD-08 | O esquema deve evoluir apenas por migrações Alembic versionadas; a versão atual é `0010_empresa_instancia_zapi`. | I: `alembic/versions/` |
 
 ### 3.6 Restrições de projeto (RR)
 
@@ -339,7 +347,7 @@ aguardam valor ([Apêndice B.2](#b2-valores-a-definir)).
 | RR-03 | Toda operação com I/O deve ser declarada como efeito pela camada de decisão e executada pelo engine, com no máximo 8 reentradas por mensagem. | Um defeito vira erro visível, não laço infinito. | I: `MAX_REENTRADAS` em `app/engine.py` |
 | RR-04 | Canais, agenda e armazenamento de documentos devem ficar atrás de interfaces (`ChannelAdapter`, `CalendarProvider`, `ArmazenamentoDocumento`), de modo que uma nova implementação não altere a camada de decisão. | — | I |
 | RR-05 | A plataforma deve ser Python 3.12+ e PostgreSQL 16, com dependências declaradas em `pyproject.toml`. | — | I |
-| RR-06 | Credencial de CRM de cada empresa deve residir apenas em variável de ambiente; o banco deve guardar só o nome da variável. | Coluna com credencial apareceria em cópias e réplicas. | T: `empresas::test_a_credencial_e_lida_do_ambiente_pelo_nome_guardado` · `empresas::test_o_token_nao_aparece_na_representacao_da_empresa` |
+| RR-06 | Credenciais de cada empresa — token do CRM e token da instância da Z-API — devem residir apenas em variável de ambiente; o banco não deve guardar o valor de nenhuma delas. | Coluna com credencial apareceria em cópias e réplicas. | T: `empresas::test_a_credencial_e_lida_do_ambiente_pelo_nome_guardado` · `empresas::test_o_token_nao_aparece_na_representacao_da_empresa` · `empresas::test_empresa_sem_instancia_nao_carrega_token_da_zapi` |
 | RR-07 | A verificação de integração deve recusar receber a configuração global no lugar de uma empresa. | Nomes de atributo coincidentes já reabriram a credencial global em silêncio. | T: `multiempresa::test_a_configuracao_nao_pode_passar_por_empresa` |
 
 ### 3.7 Atributos do sistema
@@ -374,6 +382,8 @@ aguardam valor ([Apêndice B.2](#b2-valores-a-definir)).
 | RNF-SEG-06 | A conferência de assinatura só deve poder ser desligada por configuração explícita, e o desligamento deve gerar aviso em log a cada chamada. | I: `app/web/assinatura.py` |
 | RNF-SEG-07 | Credenciais não devem ser versionadas: `.env` e cópias `.env.bak*` devem estar fora do controle de versão. | I: `.gitignore` |
 | RNF-SEG-08 | O usuário de serviço do CRM deve ter só as permissões `comercial.negociacoes` e `comercial.tarefas`, nunca `administrador_empresa`. | I: CRM, `php artisan integracao:usuario` |
+| RNF-SEG-09 | Chamada da Z-API, que não é assinada, deve ser autenticada pelo segredo no endereço (`ZAPI_WEBHOOK_SEGREDO`), comparado em tempo constante; sem segredo configurado, toda chamada deve ser recusada; a recusa não deve acessar o banco. | T: `webhook_zapi::test_segredo_errado_e_403_e_nao_toca_no_banco` · `webhook_zapi::test_sem_segredo_configurado_tudo_e_recusado` |
+| RNF-SEG-10 | Nenhum registro de log deve conter token de instância, token de conta ou segredo de webhook: URLs com esses valores devem ser mascaradas antes de gravadas, e falha de envio da Z-API deve ser registrada sem a URL. | T: `logging::test_filtro_mascara_url_passada_como_objeto` · `logging::test_log_de_acesso_do_webhook_da_zapi_e_mascarado` · `whatsapp_zapi::test_falha_de_rede_nao_vaza_o_token` |
 
 #### 3.7.4 Privacidade (RNF-PRIV)
 
@@ -413,7 +423,7 @@ aguardam valor ([Apêndice B.2](#b2-valores-a-definir)).
 
 | Método | Como é executado |
 |---|---|
-| **T — Teste** | `pytest` (413 casos). Cada requisito T cita ao menos um caso. A cerca de pureza (`machine_pura`) e o snapshot da transcrição (`e2e_transcricao`) são testes de restrição. |
+| **T — Teste** | `pytest` (453 casos). Cada requisito T cita ao menos um caso. A cerca de pureza (`machine_pura`) e o snapshot da transcrição (`e2e_transcricao`) são testes de restrição. |
 | **I — Inspeção** | Revisão do código ou da configuração citada, em revisão de mudança. |
 | **D — Demonstração** | Execução do script citado contra um ambiente de desenvolvimento. |
 | **A — Análise** | Medição ou revisão documental. Aplica-se aos itens [A DEFINIR] depois de receberem valor. |
@@ -428,7 +438,7 @@ aceito.
 
 | # | Premissa / dependência | Efeito se falhar |
 |---|---|---|
-| A-1 | A empresa possui número de WhatsApp **brasileiro** registrado no provedor. | Pela Meta, as respostas a leads brasileiros não são entregues (130497). |
+| A-1 | A empresa possui número de WhatsApp **brasileiro** registrado na Meta, ou um número conectado a uma instância da Z-API. | Pela Meta com número estrangeiro, as respostas a leads brasileiros não são entregues (130497); com a instância da Z-API desconectada, nada entra nem sai. |
 | A-2 | O lead inicia a conversa; a Marina só responde dentro da janela de 24 h. | Mensagens fora da janela exigiriam modelo aprovado, não implementado. |
 | A-3 | Cada empresa tem uma instalação do `base-crm-juridico` com a API de integração e um usuário de serviço. | A integração fica desligada para a empresa (RF-CRM-08). |
 | A-4 | Consultores e regras de agenda estão cadastrados e ativos. | Sem horários, todo lead é escalado (RF-AGD-04). |
@@ -485,3 +495,4 @@ aceito.
 | Versão | Data | Alteração |
 |---|---|---|
 | 1.0 | 15/09/2026 | Linha de base levantada do código e dos testes (413 casos, migração `0009_id_externo_da_meta`). |
+| 1.1 | 15/09/2026 | Canal Z-API (RI-09, RI-10, RF-WA-11 a 13, RNF-SEG-09 e 10), mascaramento de segredos no log, migração `0010_empresa_instancia_zapi`, 453 casos. |

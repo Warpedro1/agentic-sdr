@@ -16,13 +16,13 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"    # Linux/macOS: .venv/bin/python
 
 docker compose up -d          # Postgres 16 na 5432 (marina/marina/marina)
-alembic upgrade head          # head atual: 0009_id_externo_da_meta
+alembic upgrade head          # head atual: 0010_empresa_instancia_zapi
 python scripts/cadastrar_empresa.py --listar   # quem a Marina atende hoje
 python scripts/seed.py        # 3 consultores + agenda seg-sex 9h-18h
 
 python -m app.cli             # conversa com a Marina no terminal
 python -m app.cli --empresa acme   # ... por uma empresa especifica
-python -m app.whatsapp        # webhooks do WhatsApp, Twilio e Meta (:8000)
+python -m app.whatsapp        # webhooks do WhatsApp: Twilio, Meta e Z-API (:8000)
 ```
 
 Não há `.env` versionado — copie o `.env.example`. `alembic/env.py` lê a URL do
@@ -31,14 +31,15 @@ banco de `app.config`, nunca do `alembic.ini`.
 ### Testes
 
 ```bash
-pytest                                              # 413 testes
+pytest                                              # 453 testes
 pytest tests/test_machine.py                        # um arquivo
 pytest tests/test_guards.py -k "escopo"             # um caso
 ATUALIZAR_SNAPSHOT=1 pytest tests/test_e2e_transcricao.py   # regrava o snapshot da copy
 ```
 
 `tests/test_machine.py`, `test_parsers.py`, `test_guards.py`, `test_machine_pura.py`,
-`test_juridico_mapeamento.py` e `test_whatsapp_adaptador.py` **não tocam o banco**
+`test_juridico_mapeamento.py`, `test_whatsapp_adaptador.py`, `test_whatsapp_meta.py`,
+`test_whatsapp_zapi.py` e `test_logging.py` **não tocam o banco**
 e rodam em menos de um segundo. Os demais usam a fixture `sessao_db` (`tests/conftest.py`), que cria o
 banco `marina_test` à parte e **pula com mensagem clara** se o Postgres não
 estiver no ar — um skip em massa quase sempre significa `docker compose up -d`,
@@ -63,6 +64,7 @@ python scripts/sync_consultores.py                        # importa usuarios do 
 python scripts/configurar_agenda.py --listar              # define quem atende quando
 python scripts/flush_outbox.py [--falhados|--reprocessar] # força a entrega ao juridico
 python scripts/simular_webhook_twilio.py --texto "oi"     # webhook assinado, sem ngrok
+python scripts/configurar_webhook_zapi.py --empresa leve --url-publica https://...  # confere a Z-API e reaponta os webhooks
 ```
 
 ## Requisitos
@@ -306,6 +308,33 @@ variável faz **toda** chamada virar 403.
 `scripts/simular_webhook_twilio.py` exercita isso sem ngrok e sem conta.
 Documentação: `docs/whatsapp/`; o multiempresa está em `docs/empresas/`.
 
+### WhatsApp pela Z-API
+
+Terceiro caminho (`app/channels/whatsapp_zapi.py`), convivendo com Twilio e Meta na
+mesma aplicação — cada rota responde pelo seu provedor. **Não é a API oficial**: a
+instância conecta o número como aparelho do WhatsApp Web, por QR code, e o número
+continua ativo no celular. Quatro coisas que só se descobrem quebrando:
+
+- **O webhook não é assinado.** A prova de origem é o segredo no caminho
+  (`/webhooks/zapi/<ZAPI_WEBHOOK_SEGREDO>`, conferido por `valida_zapi`), e por isso
+  ele nunca pode aparecer em log.
+- **O token da instância vai na URL de envio** (`/instances/{id}/token/{token}/…`).
+  Nunca registre a URL nem `str(erro)` do httpx: falha de envio vai ao log por status
+  e corpo (`falha_da_resposta`). `app/logging.py` mascara `/token/…`,
+  `/webhooks/zapi/…` e `hub.verify_token` em todo handler — o httpx registra toda
+  chamada feita, e o uvicorn toda requisição recebida, com a URL inteira.
+- **O eco chega pelo webhook.** Mensagens do próprio número (`fromMe`), de grupo e
+  respostas a status são descartadas por `motivo_para_ignorar` antes do banco; sem
+  isso a Marina responderia a si mesma.
+- **Contato pode vir como `…@lid`**, sem telefone. A identidade fica assim, e
+  `telefone_do_canal` devolve None para qualquer coisa com `@` — a Marina pergunta.
+
+A mensagem é roteada por `empresas.zapi_instancia_id`. O token da instância fica em
+`ZAPI_TOKEN_<SLUG>` (lido só se a empresa tem instância) e o token de segurança da
+conta em `ZAPI_CLIENT_TOKEN` (cabeçalho `Client-Token`; sem ele a conta responde
+`your client-token is not configured`). A cada troca de túnel,
+`scripts/configurar_webhook_zapi.py` confere a conexão e reaponta todos os webhooks.
+
 ### Integração com o `juridico`
 
 Desligada por padrão (`JURIDICO_ATIVO=false`), e com ela desligada a Marina roda
@@ -364,7 +393,7 @@ terminal.
   `InterfaceError` antes de qualquer query. Todo entrypoint assíncrono (cli,
   scripts, alembic) usa `executar`; os testes usam o hook
   `pytest_asyncio_loop_factories` em `conftest.py` pelo mesmo motivo.
-- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 413) e
+- **O README está defasado em pontos concretos.** Ele diz 301 testes (são 453) e
   descreve endpoints de um backend que não existe mais. A reunião fica **em
   aberto**, sem responsável, e nenhuma mensagem cita um consultor.
   Para regra de negócio, a fonte atual é a especificação
