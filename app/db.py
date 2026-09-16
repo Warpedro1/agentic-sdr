@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
 from app.config import obter_configuracao
 
 _engine: AsyncEngine | None = None
+_engine_de_travas: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
@@ -29,6 +30,28 @@ def obter_engine() -> AsyncEngine:
             future=True,
         )
     return _engine
+
+
+def obter_engine_de_travas() -> AsyncEngine:
+    """Pool so para as travas por identidade do `Engine`.
+
+    A trava segura a conexao pelo turno inteiro, e o turno ainda precisa de outra
+    para trabalhar. No mesmo pool, turnos simultaneos de numeros diferentes prendiam
+    todas as conexoes nas travas e esperavam para sempre pela de trabalho. Separado,
+    o pior caso e o turno excedente esperar a vez — por isso sem overflow e com
+    espera longa.
+    """
+    global _engine_de_travas
+    if _engine_de_travas is None:
+        config = obter_configuracao()
+        _engine_de_travas = create_async_engine(
+            config.database_url,
+            pool_pre_ping=True,
+            pool_size=config.travas_pool,
+            max_overflow=0,
+            pool_timeout=300,
+        )
+    return _engine_de_travas
 
 
 def obter_sessionmaker() -> async_sessionmaker[AsyncSession]:
@@ -45,8 +68,11 @@ async def sessao() -> AsyncIterator[AsyncSession]:
 
 
 async def encerrar() -> None:
-    global _engine, _sessionmaker
+    global _engine, _engine_de_travas, _sessionmaker
     if _engine is not None:
         await _engine.dispose()
+    if _engine_de_travas is not None:
+        await _engine_de_travas.dispose()
     _engine = None
+    _engine_de_travas = None
     _sessionmaker = None

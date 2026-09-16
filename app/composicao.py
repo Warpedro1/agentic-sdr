@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.channels.base import ChannelAdapter
 from app.config import Configuracao, obter_configuracao
@@ -112,6 +112,8 @@ class Dependencias:
     criar_sessao: async_sessionmaker[AsyncSession]
     armazenamento: ArmazenamentoDocumento
     integracoes: RegistroIntegracoes
+    #: Pool dedicado as travas por identidade (ver `Engine`). None usa o das sessoes.
+    engine_de_travas: AsyncEngine | None = None
 
     async def fechar(self) -> None:
         await self.integracoes.fechar()
@@ -120,6 +122,7 @@ class Dependencias:
 def montar_dependencias(
     criar_sessao: async_sessionmaker[AsyncSession],
     config: Configuracao | None = None,
+    engine_de_travas: AsyncEngine | None = None,
 ) -> Dependencias:
     """Monta o que vale para todas as empresas, uma vez.
 
@@ -132,6 +135,7 @@ def montar_dependencias(
         criar_sessao=criar_sessao,
         armazenamento=LocalDocumentStorage(config),
         integracoes=RegistroIntegracoes(criar_sessao, config),
+        engine_de_travas=engine_de_travas,
     )
 
 
@@ -152,6 +156,7 @@ def montar_motor(
         armazenamento=deps.armazenamento,
         crm=deps.integracoes.sink(empresa),
         entregador=deps.integracoes.entregador(empresa),
+        engine_de_travas=deps.engine_de_travas,
     )
 
 

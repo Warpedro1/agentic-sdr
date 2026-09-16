@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.agenda.disponibilidade import gerar_candidatos, montar_ofertas
 from app.agenda.reserva import ResultadoReserva, reservar
@@ -121,8 +121,15 @@ class Engine:
         crm: CrmSink | None = None,
         relogio: Callable[[], datetime] | None = None,
         entregador: Any | None = None,
+        engine_de_travas: AsyncEngine | None = None,
     ) -> None:
         self._criar_sessao = criar_sessao
+        #: De onde sai a conexao que segura a trava do turno. No servidor e um pool
+        #: proprio: a trava fica com a conexao pelo turno inteiro, e no mesmo pool das
+        #: sessoes N turnos simultaneos prenderiam todas as conexoes nas travas e cada
+        #: um esperaria para sempre pela conexao de trabalho. Sem ele (terminal,
+        #: testes), usa o mesmo engine das sessoes.
+        self._engine_de_travas = engine_de_travas or criar_sessao.kw["bind"]
         self._adaptador = adaptador
         #: Por qual empresa este atendimento acontece. Obrigatoria e sem padrao:
         #: "qualquer empresa" e o defeito que a separacao por empresa existe para
@@ -257,13 +264,21 @@ class Engine:
         # devolve a conexao ao pool a cada commit: o unlock saia por outra conexao,
         # nao soltava nada, e a trava ficava esquecida numa conexao ociosa — a
         # mensagem seguinte daquele numero esperava para sempre.
-        async with self._criar_sessao.kw["bind"].connect() as conexao:
-            await conexao.execute(
-                text("SELECT pg_advisory_lock(hashtextextended(:chave, 0))"), argumento
-            )
-            # Fecha a transacao mantendo a trava e a conexao, para ela nao passar o
-            # turno inteiro idle-in-transaction.
-            await conexao.commit()
+        async with self._engine_de_travas.connect() as conexao:
+            try:
+                await conexao.execute(
+                    text("SELECT pg_advisory_lock(hashtextextended(:chave, 0))"),
+                    argumento,
+                )
+                # Fecha a transacao mantendo a trava e a conexao, para ela nao passar
+                # o turno inteiro idle-in-transaction.
+                await conexao.commit()
+            except BaseException:
+                # Mesmo motivo do unlock abaixo: cancelado ou quebrado entre pegar a
+                # trava e entrar no turno, a conexao pode estar com a trava concedida
+                # e nao pode voltar ao pool assim.
+                await conexao.invalidate()
+                raise
             try:
                 yield
             finally:

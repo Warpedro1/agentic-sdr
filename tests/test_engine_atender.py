@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncConnection, async_sessionmaker, create_async_engine
 
 from app.channels.base import InboundMessage, MensagemSaida
 from app.config import Configuracao
@@ -246,6 +247,79 @@ async def test_a_trava_e_solta_mesmo_com_o_pool_cheio(sessao_db, criar_sessao_db
     # E a prova pelo sintoma: a mensagem seguinte do mesmo numero e atendida.
     seguinte, _ = montar(criar_sessao_db, empresa)
     await asyncio.wait_for(seguinte.atender(TELEFONE, txt("Pedro Guerra")), timeout=10)
+
+
+_TRAVAS_CONCEDIDAS = text(
+    "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+    "WHERE l.locktype = 'advisory' AND l.granted AND d.datname = current_database()"
+)
+
+
+async def test_trava_nao_vaza_se_o_commit_apos_pegar_falhar(
+    sessao_db, criar_sessao_db, empresa, monkeypatch
+):
+    """Falha entre pegar a trava e entrar no turno nao pode devolver a conexao ao pool
+    ainda travada — senao o numero nunca mais e atendido."""
+    original = AsyncConnection.commit
+    falhar = {"vez": True}
+
+    async def commit_que_falha_uma_vez(self):
+        if falhar["vez"]:
+            falhar["vez"] = False
+            raise RuntimeError("conexao caiu")
+        await original(self)
+
+    monkeypatch.setattr(AsyncConnection, "commit", commit_que_falha_uma_vez)
+    motor, _ = montar(criar_sessao_db, empresa)
+    with pytest.raises(RuntimeError, match="conexao caiu"):
+        await motor.atender(TELEFONE, txt("oi"))
+
+    assert await sessao_db.scalar(_TRAVAS_CONCEDIDAS) == 0
+    seguinte, _ = montar(criar_sessao_db, empresa)
+    await asyncio.wait_for(seguinte.atender(TELEFONE, txt("oi")), timeout=10)
+
+
+async def test_turnos_simultaneos_alem_do_pool_de_sessoes_sao_atendidos(
+    sessao_db, engine_teste, empresa
+):
+    """Com a trava no mesmo pool das sessoes, seis numeros ao mesmo tempo prendiam as
+    duas conexoes nas travas e cada turno esperava para sempre pela de trabalho."""
+    pequeno = create_async_engine(
+        engine_teste.url, pool_size=2, max_overflow=0, pool_timeout=5
+    )
+    try:
+        criar_sessao = async_sessionmaker(pequeno, expire_on_commit=False)
+        motores = []
+        for _ in range(6):
+            adaptador = AdaptadorDeEmpurrao()
+            motores.append(
+                (
+                    Engine(
+                        criar_sessao=criar_sessao,
+                        adaptador=adaptador,
+                        empresa=empresa,
+                        config=Configuracao(juridico_ativo=False),
+                        relogio=lambda: AGORA,
+                        engine_de_travas=engine_teste,
+                    ),
+                    adaptador,
+                )
+            )
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    motor.atender(f"+55119876543{i:02d}", txt("oi"))
+                    for i, (motor, _) in enumerate(motores)
+                )
+            ),
+            timeout=30,
+        )
+    finally:
+        await pequeno.dispose()
+
+    assert all(adaptador.enviadas for _, adaptador in motores)
+    assert await sessao_db.scalar(_TRAVAS_CONCEDIDAS) == 0
 
 
 @pytest.mark.asyncio

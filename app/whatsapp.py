@@ -18,7 +18,7 @@ from app.channels.whatsapp_twilio import TwilioWhatsApp
 from app.channels.whatsapp_zapi import ZApiWhatsApp
 from app.composicao import montar_dependencias
 from app.config import Configuracao, obter_configuracao
-from app.db import encerrar, obter_engine
+from app.db import encerrar, obter_engine, obter_engine_de_travas
 from app.empresas import PREFIXO_TOKEN_ZAPI, EmpresaCtx, listar_ativas, slug_para_env
 from app.logging import configurar_logging, obter_logger
 from app.web.webhook import criar_app
@@ -101,7 +101,7 @@ async def main() -> None:
     _avisar_configuracao_pela_metade(config)
 
     criar_sessao = async_sessionmaker(obter_engine(), expire_on_commit=False)
-    deps = montar_dependencias(criar_sessao, config)
+    deps = montar_dependencias(criar_sessao, config, obter_engine_de_travas())
     twilio = TwilioWhatsApp(config)
     meta = MetaWhatsApp(config)
     zapi = ZApiWhatsApp(config)

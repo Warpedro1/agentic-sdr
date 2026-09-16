@@ -14,6 +14,10 @@ class Configuracao(BaseSettings):
     )
 
     database_url: str = "postgresql+psycopg://marina:marina@localhost:5432/marina"
+    #: Conexoes reservadas as travas por identidade no servidor do WhatsApp. E o
+    #: limite de turnos de numeros DIFERENTES correndo ao mesmo tempo; o excedente
+    #: espera a vez, sem prender conexao de trabalho.
+    travas_pool: int = 20
 
     # Agendamento
     antecedencia_minima_horas: int = 2
